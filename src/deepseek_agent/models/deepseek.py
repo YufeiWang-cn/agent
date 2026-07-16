@@ -8,6 +8,7 @@ from ..conversation import Message
 
 class DeepSeekModel:
     def __init__(self, settings: Settings) -> None:
+        # 属性名前面的_表示内部实现，不建议外部直接访问
         self._model_name = settings.model
         self._client = OpenAI(
             api_key=settings.api_key,

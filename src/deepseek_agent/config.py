@@ -11,6 +11,11 @@ DEFAULT_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "system.md"
 
 @dataclass(frozen=True, slots=True)
 class Settings:
+    '''
+    @dataclass(frozen=True, slots=True)将Settings类变成数据类\n
+    frozen=True：创建后不允许修改配置，防止运行过程中误改Key或模型\n
+    slots=True：限制对象只能包含定义过的属性，并减少少量内存使用
+    '''
     api_key: str
     base_url: str
     model: str

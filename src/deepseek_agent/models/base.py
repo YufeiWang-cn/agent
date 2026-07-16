@@ -6,6 +6,6 @@ from ..conversation import Message
 
 class ChatModel(Protocol):
     @property
-    def model_name(self) -> str: ...
+    def model_name(self) -> str: ...  # ...表示这里只声明接口，不提供实现
 
     def stream(self, messages: Sequence[Message]) -> Iterable[str]: ...
