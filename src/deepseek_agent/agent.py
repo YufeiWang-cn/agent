@@ -1,14 +1,22 @@
 from .config import Settings
-from .conversation import Conversation
-from .models import ChatModel, DeepSeekModel
+from .conversation import Conversation, Message
+from .models import ChatModel, DeepSeekModel, TextDelta, ToolCallRequest
+from .tools import ToolError, ToolRegistry, build_default_registry
 
 
 EXIT_COMMANDS = {"/exit", "exit", "quit", "q", "退出"}
+MAX_AGENT_STEPS = 5
 
 
 class Agent:
-    def __init__(self, settings: Settings, model: ChatModel | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        model: ChatModel | None = None,
+        tools: ToolRegistry | None = None,
+    ) -> None:
         self._model = model or DeepSeekModel(settings)
+        self._tools = tools if tools is not None else build_default_registry()
         self._conversation = Conversation(settings.system_prompt)
         self._running = True
 
@@ -31,21 +39,69 @@ class Agent:
             self._chat(prompt)
 
     def _chat(self, prompt: str) -> None:
+        checkpoint = len(self._conversation)
         self._conversation.add_user(prompt)
-        answer_parts: list[str] = []
 
         try:
-            print("\n助手：", end="", flush=True)
-            for content in self._model.stream(self._conversation.messages):
-                print(content, end="", flush=True)
-                answer_parts.append(content)
-            print()
+            for _step in range(MAX_AGENT_STEPS):
+                answer_parts: list[str] = []
+                tool_requests: list[ToolCallRequest] = []
+                started_output = False
+
+                for event in self._model.stream(
+                    self._conversation.messages,
+                    self._tools.schemas,
+                ):
+                    if isinstance(event, TextDelta):
+                        if not started_output:
+                            print("\n助手：", end="", flush=True)
+                            started_output = True
+                        print(event.content, end="", flush=True)
+                        answer_parts.append(event.content)
+                    elif isinstance(event, ToolCallRequest):
+                        tool_requests.append(event)
+
+                if started_output:
+                    print()
+
+                if not tool_requests:
+                    answer = "".join(answer_parts)
+                    if not answer:
+                        answer = "（模型未返回内容）"
+                        print(f"\n助手：{answer}")
+                    self._conversation.add_assistant(answer)
+                    return
+
+                self._conversation.add_assistant_tool_calls(
+                    [request.as_message_dict() for request in tool_requests],
+                    content="".join(answer_parts) or None,
+                )
+                self._execute_tools(tool_requests)
         except Exception as error:
-            self._conversation.remove_last_user()
+            self._conversation.truncate(checkpoint)
             print(f"\n调用失败：{error}")
             return
 
-        self._conversation.add_assistant("".join(answer_parts))
+        message = f"Agent 已达到最大执行步数 {MAX_AGENT_STEPS}，任务已停止。"
+        self._conversation.add_assistant(message)
+        print(f"\n助手：{message}")
+
+    def _execute_tools(self, requests: list[ToolCallRequest]) -> None:
+        for request in requests:
+            print(f"\n[工具调用] {request.name} 参数：{request.arguments}")
+            try:
+                result = self._tools.execute(request.name, request.arguments)
+            except ToolError as error:
+                result = f"工具执行失败：{error}"
+            except Exception as error:
+                result = f"工具发生未预期错误：{error}"
+
+            print(f"[工具结果] {result}")
+            self._conversation.add_tool_result(
+                tool_call_id=request.id,
+                name=request.name,
+                content=result,
+            )
 
     def _handle_command(self, prompt: str) -> bool:
         command = prompt.lower()
@@ -72,6 +128,10 @@ class Agent:
             print(f"当前模型：{self._model.model_name}")
             return True
 
+        if command == "/tools":
+            print("可用工具：" + "、".join(self._tools.names))
+            return True
+
         if command.startswith("/"):
             print("未知命令。输入 /help 查看可用命令。")
             return True
@@ -90,6 +150,7 @@ class Agent:
             "  /clear    清空当前对话上下文\n"
             "  /history  查看当前对话历史\n"
             "  /model    查看当前模型\n"
+            "  /tools    查看可用工具\n"
             "  /exit     退出程序"
         )
 
@@ -99,7 +160,19 @@ class Agent:
             print("当前还没有对话记录。")
             return
 
-        role_names = {"user": "你", "assistant": "助手"}
         for message in history:
-            role = role_names.get(message["role"], message["role"])
-            print(f"{role}：{message['content']}")
+            print(self._format_history_message(message))
+
+    @staticmethod
+    def _format_history_message(message: Message) -> str:
+        role = message["role"]
+        if role == "user":
+            return f"你：{message['content']}"
+        if role == "tool":
+            return f"工具 {message.get('name', '')}：{message['content']}"
+        if message.get("tool_calls"):
+            names = [
+                call["function"]["name"] for call in message["tool_calls"]
+            ]
+            return "助手：[请求调用工具：" + "、".join(names) + "]"
+        return f"助手：{message.get('content') or ''}"

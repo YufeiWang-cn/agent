@@ -1,6 +1,6 @@
 # DeepSeek Agent
 
-一个使用 DeepSeek API 构建的命令行 Agent 项目。目前支持多轮对话、流式输出和基础命令。
+一个使用 DeepSeek API 构建的命令行 Agent 项目。目前支持多轮对话、流式输出、基础命令，以及安全的工具调用循环。
 
 ## 安装
 
@@ -18,17 +18,23 @@ python -m pip install -e .
 python main.py
 ```
 
-旧入口仍然可用：
-
-```bat
-python llm_call.py
-```
-
 ## 命令
 
 - `/help`：显示帮助
 - `/clear`：清空当前对话上下文
 - `/history`：查看当前对话历史
 - `/model`：查看当前模型
+- `/tools`：查看当前可用工具
 - `/exit`：退出程序
 - `exit`、`quit`、`q`、`退出`：退出程序
+
+## 内置工具
+
+- `calculator`：安全计算基础数学表达式
+- `get_current_time`：获取指定时区的当前日期和时间
+
+## 测试
+
+```bat
+python -m unittest discover -s tests -v
+```
