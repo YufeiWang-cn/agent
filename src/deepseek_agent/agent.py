@@ -5,6 +5,7 @@ from .context import ContextManager
 from .conversation import Conversation, Message
 from .memory import JsonSessionStore, Session, SessionStoreError
 from .models import ChatModel, DeepSeekModel, TextDelta, ToolCallRequest
+from .permissions import ConsoleToolConfirmer, ToolConfirmer
 from .tools import ToolError, ToolRegistry, build_default_registry
 
 
@@ -21,6 +22,7 @@ class Agent:
         tools: ToolRegistry | None = None,
         session_store: JsonSessionStore | None = None,
         context_manager: ContextManager | None = None,
+        confirmer: ToolConfirmer | None = None,
     ) -> None:
         self._model = model or DeepSeekModel(settings)
         self._tools = tools if tools is not None else build_default_registry()
@@ -30,6 +32,9 @@ class Agent:
         )
         self._context_manager = context_manager or ContextManager(
             settings.max_context_tokens
+        )
+        self._confirmer = (
+            confirmer if confirmer is not None else ConsoleToolConfirmer()
         )
         self._session = self._restore_latest_session()
         self._running = True
@@ -110,7 +115,14 @@ class Agent:
         for request in requests:
             print(f"\n[工具调用] {request.name} 参数：{request.arguments}")
             try:
-                result = self._tools.execute(request.name, request.arguments)
+                tool = self._tools.get(request.name)
+                if tool.requires_confirmation and not self._confirmer.confirm(
+                    tool,
+                    request.arguments,
+                ):
+                    result = "用户拒绝执行该工具。"
+                else:
+                    result = self._tools.execute(request.name, request.arguments)
             except ToolError as error:
                 result = f"工具执行失败：{error}"
             except Exception as error:
