@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from .config import PROJECT_ROOT, Settings
+from .context import ContextManager
 from .conversation import Conversation, Message
 from .memory import JsonSessionStore, Session, SessionStoreError
 from .models import ChatModel, DeepSeekModel, TextDelta, ToolCallRequest
@@ -19,12 +20,16 @@ class Agent:
         model: ChatModel | None = None,
         tools: ToolRegistry | None = None,
         session_store: JsonSessionStore | None = None,
+        context_manager: ContextManager | None = None,
     ) -> None:
         self._model = model or DeepSeekModel(settings)
         self._tools = tools if tools is not None else build_default_registry()
         self._conversation = Conversation(settings.system_prompt)
         self._session_store = session_store or JsonSessionStore(
             Path(DEFAULT_SESSION_DIRECTORY)
+        )
+        self._context_manager = context_manager or ContextManager(
+            settings.max_context_tokens
         )
         self._session = self._restore_latest_session()
         self._running = True
@@ -58,8 +63,11 @@ class Agent:
                 tool_requests: list[ToolCallRequest] = []
                 started_output = False
 
+                context_window = self._context_manager.prepare(
+                    self._conversation.messages
+                )
                 for event in self._model.stream(
-                    self._conversation.messages,
+                    context_window.messages,
                     self._tools.schemas,
                 ):
                     if isinstance(event, TextDelta):
@@ -158,6 +166,10 @@ class Agent:
 
         if command == "/history":
             self._print_history()
+            return True
+
+        if command == "/context":
+            self._print_context()
             return True
 
         if command == "/model":
@@ -269,6 +281,7 @@ class Agent:
             "  /delete <ID>  删除指定会话\n"
             "  /clear        清空当前会话上下文\n"
             "  /history      查看当前对话历史\n"
+            "  /context      查看上下文预算和裁剪情况\n"
             "  /model        查看当前模型\n"
             "  /tools        查看可用工具\n"
             "  /exit         退出程序"
@@ -282,6 +295,16 @@ class Agent:
 
         for message in history:
             print(self._format_history_message(message))
+
+    def _print_context(self) -> None:
+        window = self._context_manager.prepare(self._conversation.messages)
+        print(
+            "上下文状态（近似值）：\n"
+            f"  消息 Token 预算：{self._context_manager.max_tokens}\n"
+            f"  完整历史 Token：{window.total_estimated_tokens}\n"
+            f"  预计发送 Token：{window.estimated_tokens}\n"
+            f"  省略历史消息数：{window.omitted_messages}"
+        )
 
     @staticmethod
     def _format_history_message(message: Message) -> str:

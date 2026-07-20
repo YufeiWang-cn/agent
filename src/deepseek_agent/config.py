@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "system.md"
+DEFAULT_MAX_CONTEXT_TOKENS = 8_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +21,7 @@ class Settings:
     base_url: str
     model: str
     system_prompt: str
+    max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -29,6 +31,19 @@ class Settings:
         if not api_key:
             raise RuntimeError("请先在 .env 中设置 DEEPSEEK_API_KEY。")
 
+        raw_max_context_tokens = os.getenv(
+            "DEEPSEEK_MAX_CONTEXT_TOKENS",
+            str(DEFAULT_MAX_CONTEXT_TOKENS),
+        ).strip()
+        try:
+            max_context_tokens = int(raw_max_context_tokens)
+        except ValueError as error:
+            raise RuntimeError(
+                "DEEPSEEK_MAX_CONTEXT_TOKENS 必须是正整数。"
+            ) from error
+        if max_context_tokens <= 0:
+            raise RuntimeError("DEEPSEEK_MAX_CONTEXT_TOKENS 必须是正整数。")
+
         return cls(
             api_key=api_key,
             base_url=os.getenv(
@@ -36,4 +51,5 @@ class Settings:
             ).strip(),
             model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro").strip(),
             system_prompt=DEFAULT_PROMPT_PATH.read_text(encoding="utf-8").strip(),
+            max_context_tokens=max_context_tokens,
         )
