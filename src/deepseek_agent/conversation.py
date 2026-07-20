@@ -1,3 +1,4 @@
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -17,6 +18,14 @@ class Conversation:
 
     def clear(self) -> None:
         self.messages = [{"role": "system", "content": self.system_prompt}]
+
+    def restore(self, messages: list[Message]) -> None:
+        if not messages or messages[0].get("role") != "system":
+            raise ValueError("会话记录缺少 system 消息")
+        self.messages = deepcopy(messages)
+        # 使用当前项目中的系统提示词，避免恢复已经过期的提示词。
+        # 旧会话恢复后也会使用最新提示词，而不是永久沿用旧版本。
+        self.messages[0] = {"role": "system", "content": self.system_prompt}
 
     def __len__(self) -> int:
         return len(self.messages)

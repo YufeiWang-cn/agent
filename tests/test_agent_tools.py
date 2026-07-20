@@ -1,4 +1,6 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 from _path_setup import add_project_root_to_path
 
@@ -7,6 +9,7 @@ add_project_root_to_path()
 from src.deepseek_agent.agent import Agent
 from src.deepseek_agent.config import Settings
 from src.deepseek_agent.conversation import Message
+from src.deepseek_agent.memory import JsonSessionStore
 from src.deepseek_agent.models import StreamEvent, TextDelta, ToolCallRequest
 
 
@@ -38,14 +41,34 @@ class AgentToolLoopTests(unittest.TestCase):
             system_prompt="system",
         )
         model = FakeToolModel()
-        agent = Agent(settings, model=model)
+        with tempfile.TemporaryDirectory() as directory:
+            store = JsonSessionStore(Path(directory))
+            agent = Agent(settings, model=model, session_store=store)
 
-        agent._chat("128乘以37是多少？")
+            agent._chat("128乘以37是多少？")
 
-        self.assertEqual(len(model.calls), 2)
-        second_call_roles = [message["role"] for message in model.calls[1]]
-        self.assertEqual(second_call_roles, ["system", "user", "assistant", "tool"])
-        self.assertEqual(model.calls[1][-1]["content"], "4736")
+            self.assertEqual(len(model.calls), 2)
+            second_call_roles = [message["role"] for message in model.calls[1]]
+            self.assertEqual(
+                second_call_roles,
+                ["system", "user", "assistant", "tool"],
+            )
+            self.assertEqual(model.calls[1][-1]["content"], "4736")
+
+            restored = store.latest()
+            self.assertIsNotNone(restored)
+            self.assertEqual(restored.title, "128乘以37是多少？")
+            self.assertEqual(restored.messages[-1]["role"], "assistant")
+
+            restarted_agent = Agent(
+                settings,
+                model=FakeToolModel(),
+                session_store=store,
+            )
+            self.assertEqual(
+                restarted_agent._conversation.messages,
+                restored.messages,
+            )
 
 
 if __name__ == "__main__":

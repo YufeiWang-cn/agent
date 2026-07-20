@@ -1,0 +1,71 @@
+import json
+from pathlib import Path
+
+from .session import Session
+
+
+class SessionStoreError(RuntimeError):
+    pass
+
+
+class JsonSessionStore:
+    def __init__(self, directory: Path) -> None:
+        self._directory = directory
+        self._directory.mkdir(parents=True, exist_ok=True)
+
+    def save(self, session: Session) -> None:
+        path = self._path_for(session.id)
+        temporary_path = path.with_suffix(".tmp")
+        content = json.dumps(session.to_dict(), ensure_ascii=False, indent=2)
+        temporary_path.write_text(content, encoding="utf-8")
+        temporary_path.replace(path)
+
+    def load(self, session_id: str) -> Session:
+        resolved_id = self._resolve_id(session_id)
+        path = self._path_for(resolved_id)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            session = Session.from_dict(data)
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            raise SessionStoreError(f"无法读取会话 {resolved_id}：{error}") from error
+        if session.id != resolved_id:
+            raise SessionStoreError(f"会话文件名与内部 ID 不一致：{resolved_id}")
+        return session
+
+    def list_sessions(self) -> list[Session]:
+        sessions: list[Session] = []
+        for path in self._directory.glob("*.json"):
+            try:
+                sessions.append(self.load(path.stem))
+            except SessionStoreError:
+                continue
+        return sorted(sessions, key=lambda session: session.updated_at, reverse=True)
+
+    def latest(self) -> Session | None:
+        sessions = self.list_sessions()
+        return sessions[0] if sessions else None
+
+    def delete(self, session_id: str) -> str:
+        resolved_id = self._resolve_id(session_id)
+        try:
+            self._path_for(resolved_id).unlink()
+        except OSError as error:
+            raise SessionStoreError(f"无法删除会话 {resolved_id}：{error}") from error
+        return resolved_id
+
+    def _resolve_id(self, session_id: str) -> str:
+        value = session_id.strip().lower()
+        if not value or any(character not in "0123456789abcdef" for character in value):
+            raise SessionStoreError("会话 ID 格式错误")
+        exact_path = self._path_for(value)
+        if exact_path.exists():
+            return value
+        matches = [path.stem for path in self._directory.glob(f"{value}*.json")]
+        if not matches:
+            raise SessionStoreError(f"未找到会话：{session_id}")
+        if len(matches) > 1:
+            raise SessionStoreError(f"会话 ID 前缀不唯一：{session_id}")
+        return matches[0]
+
+    def _path_for(self, session_id: str) -> Path:
+        return self._directory / f"{session_id}.json"
