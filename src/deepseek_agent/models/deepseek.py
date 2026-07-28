@@ -15,6 +15,9 @@ class DeepSeekModel:
         self._client = OpenAI(
             api_key=settings.api_key,
             base_url=settings.base_url,
+            timeout=settings.request_timeout,
+            # 由项目自己的可靠性层统一重试，避免与 SDK 内置重试叠加。
+            max_retries=0,
         )
 
     @property

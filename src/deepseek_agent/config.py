@@ -8,6 +8,10 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "system.md"
 DEFAULT_MAX_CONTEXT_TOKENS = 8_000
+DEFAULT_REQUEST_TIMEOUT = 60.0
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_RETRY_BASE_DELAY = 1.0
+DEFAULT_LOG_LEVEL = "INFO"
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +26,10 @@ class Settings:
     model: str
     system_prompt: str
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
+    request_timeout: float = DEFAULT_REQUEST_TIMEOUT
+    max_retries: int = DEFAULT_MAX_RETRIES
+    retry_base_delay: float = DEFAULT_RETRY_BASE_DELAY
+    log_level: str = DEFAULT_LOG_LEVEL
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -44,6 +52,39 @@ class Settings:
         if max_context_tokens <= 0:
             raise RuntimeError("DEEPSEEK_MAX_CONTEXT_TOKENS 必须是正整数。")
 
+        try:
+            request_timeout = float(
+                os.getenv(
+                    "DEEPSEEK_REQUEST_TIMEOUT",
+                    str(DEFAULT_REQUEST_TIMEOUT),
+                ).strip()
+            )
+            max_retries = int(
+                os.getenv(
+                    "DEEPSEEK_MAX_RETRIES",
+                    str(DEFAULT_MAX_RETRIES),
+                ).strip()
+            )
+            retry_base_delay = float(
+                os.getenv(
+                    "DEEPSEEK_RETRY_BASE_DELAY",
+                    str(DEFAULT_RETRY_BASE_DELAY),
+                ).strip()
+            )
+        except ValueError as error:
+            raise RuntimeError("模型超时和重试配置必须是数字。") from error
+
+        if request_timeout <= 0:
+            raise RuntimeError("DEEPSEEK_REQUEST_TIMEOUT 必须大于 0。")
+        if max_retries < 0:
+            raise RuntimeError("DEEPSEEK_MAX_RETRIES 不能小于 0。")
+        if retry_base_delay < 0:
+            raise RuntimeError("DEEPSEEK_RETRY_BASE_DELAY 不能小于 0。")
+
+        log_level = os.getenv("AGENT_LOG_LEVEL", DEFAULT_LOG_LEVEL).strip().upper()
+        if log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+            raise RuntimeError("AGENT_LOG_LEVEL 是无效的日志级别。")
+
         return cls(
             api_key=api_key,
             base_url=os.getenv(
@@ -52,4 +93,8 @@ class Settings:
             model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro").strip(),
             system_prompt=DEFAULT_PROMPT_PATH.read_text(encoding="utf-8").strip(),
             max_context_tokens=max_context_tokens,
+            request_timeout=request_timeout,
+            max_retries=max_retries,
+            retry_base_delay=retry_base_delay,
+            log_level=log_level,
         )

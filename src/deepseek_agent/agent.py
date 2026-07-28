@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 from .config import PROJECT_ROOT, Settings
@@ -5,7 +6,9 @@ from .context import ContextManager
 from .conversation import Conversation, Message
 from .memory import JsonSessionStore, Session, SessionStoreError
 from .models import ChatModel, DeepSeekModel, TextDelta, ToolCallRequest
+from .observability import RuntimeMetrics
 from .permissions import ConsoleToolConfirmer, ToolConfirmer
+from .reliability import RetryPolicy, RetryingChatModel
 from .tools import ToolError, ToolRegistry, build_default_registry
 
 
@@ -23,8 +26,22 @@ class Agent:
         session_store: JsonSessionStore | None = None,
         context_manager: ContextManager | None = None,
         confirmer: ToolConfirmer | None = None,
+        retry_policy: RetryPolicy | None = None,
+        metrics: RuntimeMetrics | None = None,
+        logger: logging.Logger | None = None,
     ) -> None:
-        self._model = model or DeepSeekModel(settings)
+        base_model = model or DeepSeekModel(settings)
+        self._metrics = metrics or RuntimeMetrics()
+        self._model = RetryingChatModel(
+            base_model,
+            retry_policy
+            or RetryPolicy(
+                max_retries=settings.max_retries,
+                base_delay_seconds=settings.retry_base_delay,
+            ),
+            self._metrics,
+            logger=logger,
+        )
         self._tools = tools if tools is not None else build_default_registry()
         self._conversation = Conversation(settings.system_prompt)
         self._session_store = session_store or JsonSessionStore(
@@ -184,6 +201,10 @@ class Agent:
             self._print_context()
             return True
 
+        if command == "/stats":
+            self._print_stats()
+            return True
+
         if command == "/model":
             print(f"当前模型：{self._model.model_name}")
             return True
@@ -294,6 +315,7 @@ class Agent:
             "  /clear        清空当前会话上下文\n"
             "  /history      查看当前对话历史\n"
             "  /context      查看上下文预算和裁剪情况\n"
+            "  /stats        查看本次运行的模型调用统计\n"
             "  /model        查看当前模型\n"
             "  /tools        查看可用工具\n"
             "  /exit         退出程序"
@@ -316,6 +338,18 @@ class Agent:
             f"  完整历史 Token：{window.total_estimated_tokens}\n"
             f"  预计发送 Token：{window.estimated_tokens}\n"
             f"  省略历史消息数：{window.omitted_messages}"
+        )
+
+    def _print_stats(self) -> None:
+        print(
+            "本次运行统计：\n"
+            f"  模型请求数：{self._metrics.model_requests}\n"
+            f"  API 尝试次数：{self._metrics.api_attempts}\n"
+            f"  成功请求数：{self._metrics.successful_requests}\n"
+            f"  失败请求数：{self._metrics.failed_requests}\n"
+            f"  自动重试次数：{self._metrics.retries}\n"
+            f"  平均请求耗时："
+            f"{self._metrics.average_duration_seconds:.3f} 秒"
         )
 
     @staticmethod
