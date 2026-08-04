@@ -12,6 +12,7 @@ DEFAULT_REQUEST_TIMEOUT = 60.0
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_BASE_DELAY = 1.0
 DEFAULT_LOG_LEVEL = "INFO"
+DEFAULT_MAX_FILE_SIZE = 100_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +31,8 @@ class Settings:
     max_retries: int = DEFAULT_MAX_RETRIES
     retry_base_delay: float = DEFAULT_RETRY_BASE_DELAY
     log_level: str = DEFAULT_LOG_LEVEL
+    workspace_root: Path = PROJECT_ROOT
+    max_file_size: int = DEFAULT_MAX_FILE_SIZE
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -85,6 +88,28 @@ class Settings:
         if log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise RuntimeError("AGENT_LOG_LEVEL 是无效的日志级别。")
 
+        workspace_root = Path(
+            os.getenv("AGENT_WORKSPACE", str(PROJECT_ROOT)).strip()
+        ).expanduser()
+        try:
+            workspace_root = workspace_root.resolve(strict=True)
+        except OSError as error:
+            raise RuntimeError(f"AGENT_WORKSPACE 不可用：{workspace_root}") from error
+        if not workspace_root.is_dir():
+            raise RuntimeError(f"AGENT_WORKSPACE 不是文件夹：{workspace_root}")
+
+        try:
+            max_file_size = int(
+                os.getenv(
+                    "AGENT_MAX_FILE_SIZE",
+                    str(DEFAULT_MAX_FILE_SIZE),
+                ).strip()
+            )
+        except ValueError as error:
+            raise RuntimeError("AGENT_MAX_FILE_SIZE 必须是正整数。") from error
+        if max_file_size <= 0:
+            raise RuntimeError("AGENT_MAX_FILE_SIZE 必须是正整数。")
+
         return cls(
             api_key=api_key,
             base_url=os.getenv(
@@ -97,4 +122,6 @@ class Settings:
             max_retries=max_retries,
             retry_base_delay=retry_base_delay,
             log_level=log_level,
+            workspace_root=workspace_root,
+            max_file_size=max_file_size,
         )

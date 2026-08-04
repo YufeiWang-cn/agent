@@ -59,7 +59,7 @@ class RetryingChatModel:
 
         for attempt_index in range(self._policy.max_retries + 1):
             self._metrics.record_attempt()
-            emitted_event = False
+            emitted_event = False  # 表示本次尝试是否已经产生任何流式事件
             try:
                 for event in self._model.stream(messages, tools):
                     emitted_event = True

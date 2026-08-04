@@ -42,7 +42,14 @@ class Agent:
             self._metrics,
             logger=logger,
         )
-        self._tools = tools if tools is not None else build_default_registry()
+        self._tools = (
+            tools
+            if tools is not None
+            else build_default_registry(
+                settings.workspace_root,
+                settings.max_file_size,
+            )
+        )
         self._conversation = Conversation(settings.system_prompt)
         self._session_store = session_store or JsonSessionStore(
             Path(DEFAULT_SESSION_DIRECTORY)

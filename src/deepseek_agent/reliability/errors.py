@@ -17,7 +17,7 @@ class ModelCallError(RuntimeError):
     def __init__(
         self,
         message: str,
-        *,
+        *,  # 星号表示后面的参数必须使用关键字传递
         category: str,
         retryable: bool,
         partial: bool,
