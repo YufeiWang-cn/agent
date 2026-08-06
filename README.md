@@ -51,11 +51,13 @@ python main.py
 - `get_current_time`：获取指定时区的当前日期和时间
 - `list_directory`：列出工作目录内的直接子项
 - `read_text_file`：读取工作目录内的 UTF-8 文本文件
+- `search_text`：递归搜索工作目录内的 UTF-8 文本并返回文件和行号
+- `replace_text`：精确替换文件中唯一一处文本，执行前必须确认
 - `write_text_file`：创建或完整覆盖 UTF-8 文本文件，执行前必须确认
 
 计算器和时间工具属于安全工具，会自动执行。工具将 `requires_confirmation` 设置为 `True` 后，Agent 会在命令行展示工具名称、说明和参数，并且只在用户输入 `y` 或 `yes` 后执行；直接回车或输入 `n` 会拒绝执行。
 
-文件工具禁止越过工作目录，并阻止访问 `.env`、`.git`、`.venv`、`__pycache__`、`data/sessions` 和 `logs`。文件写入通过临时文件替换目标文件；第一版不提供删除、移动或 Shell 工具。
+文件工具禁止越过工作目录，并阻止访问 `.env`、`.git`、`.venv`、`__pycache__`、`data/sessions` 和 `logs`。文本搜索最多返回 100 条结果；局部替换仅在原文本恰好匹配一次时执行。文件写入通过临时文件替换目标文件；暂不提供删除、移动或 Shell 工具。
 
 运行日志保存在 `logs/agent.log`，使用大小轮转，最多保留 3 个备份。日志不会记录 API Key、用户消息或模型回答。
 

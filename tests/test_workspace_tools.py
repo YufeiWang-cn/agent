@@ -10,6 +10,8 @@ add_project_root_to_path()
 from src.deepseek_agent.tools import (
     ListDirectoryTool,
     ReadTextFileTool,
+    ReplaceTextTool,
+    SearchTextTool,
     ToolExecutionError,
     WriteTextFileTool,
     build_default_registry,
@@ -37,6 +39,8 @@ class WorkspaceToolTests(unittest.TestCase):
         self.guard = WorkspaceGuard(self.workspace, max_file_size=100)
         self.list_tool = ListDirectoryTool(self.guard)
         self.read_tool = ReadTextFileTool(self.guard)
+        self.search_tool = SearchTextTool(self.guard)
+        self.replace_tool = ReplaceTextTool(self.guard)
         self.write_tool = WriteTextFileTool(self.guard)
 
     def tearDown(self) -> None:
@@ -144,11 +148,15 @@ class WorkspaceToolTests(unittest.TestCase):
                 "get_current_time",
                 "list_directory",
                 "read_text_file",
+                "search_text",
+                "replace_text",
                 "write_text_file",
             ),
         )
         self.assertFalse(registry.get("list_directory").requires_confirmation)
         self.assertFalse(registry.get("read_text_file").requires_confirmation)
+        self.assertFalse(registry.get("search_text").requires_confirmation)
+        self.assertTrue(registry.get("replace_text").requires_confirmation)
         self.assertTrue(registry.get("write_text_file").requires_confirmation)
 
 

@@ -2,8 +2,8 @@ from pathlib import Path
 from uuid import uuid4
 
 
-DEFAULT_BLOCKED_NAMES = frozenset({".env", ".git", ".venv", "__pycache__"})
-DEFAULT_BLOCKED_PREFIXES = (Path("data/sessions"), Path("logs"))
+DEFAULT_BLOCKED_NAMES = frozenset({".env", ".git", ".venv", "__pycache__"})  # 匹配任意一层的名称
+DEFAULT_BLOCKED_PREFIXES = (Path("data/sessions"), Path("logs"))  # 匹配从工作区根目录开始的路径前缀
 
 
 class WorkspaceAccessError(RuntimeError):
@@ -88,7 +88,7 @@ class WorkspaceGuard:
 
     def relative_path(self, path: Path) -> str:
         relative = path.relative_to(self._root)
-        return "." if not relative.parts else relative.as_posix()
+        return "." if not relative.parts else relative.as_posix()  # as_posix() 可以避免 Windows 的反斜杠在 JSON 中出现大量转义
 
     def is_accessible(self, path: Path) -> bool:
         try:

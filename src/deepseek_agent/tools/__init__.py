@@ -6,7 +6,9 @@ from .calculator import CalculatorTool
 from .datetime_tool import DateTimeTool
 from .list_directory import ListDirectoryTool
 from .read_text_file import ReadTextFileTool
+from .replace_text import ReplaceTextTool
 from .registry import ToolRegistry
+from .search_text import SearchTextTool
 from .write_text_file import WriteTextFileTool
 
 
@@ -21,6 +23,8 @@ def build_default_registry(
             DateTimeTool(),
             ListDirectoryTool(guard),
             ReadTextFileTool(guard),
+            SearchTextTool(guard),
+            ReplaceTextTool(guard),
             WriteTextFileTool(guard),
         ]
     )
@@ -31,6 +35,8 @@ __all__ = [
     "DateTimeTool",
     "ListDirectoryTool",
     "ReadTextFileTool",
+    "ReplaceTextTool",
+    "SearchTextTool",
     "Tool",
     "ToolError",
     "ToolExecutionError",
