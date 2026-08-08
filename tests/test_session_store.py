@@ -45,12 +45,38 @@ class JsonSessionStoreTests(unittest.TestCase):
             },
         ]
         session = Session.create(messages, title="计算")
+        session.move_to_project("project-1")
 
         self.store.save(session)
         loaded = self.store.load(session.id[:8])
 
         self.assertEqual(loaded.id, session.id)
         self.assertEqual(loaded.messages, messages)
+        self.assertEqual(loaded.project_id, "project-1")
+
+    def test_old_session_without_project_id_remains_compatible(self) -> None:
+        session = Session.create([{"role": "system", "content": "system"}])
+        data = session.to_dict()
+        data.pop("project_id")
+        (self.directory / f"{session.id}.json").write_text(
+            json.dumps(data, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        loaded = self.store.load(session.id)
+
+        self.assertIsNone(loaded.project_id)
+
+    def test_rename_and_move_session(self) -> None:
+        session = Session.create([{"role": "system", "content": "system"}])
+        self.store.save(session)
+
+        renamed = self.store.rename(session.id, "新的名称")
+        moved = self.store.move_to_project(session.id, "project-1")
+
+        self.assertEqual(renamed.title, "新的名称")
+        self.assertEqual(moved.project_id, "project-1")
+        self.assertEqual(self.store.load(session.id).title, "新的名称")
 
     def test_sessions_are_sorted_by_updated_time(self) -> None:
         older = Session.create([{"role": "system", "content": "system"}])

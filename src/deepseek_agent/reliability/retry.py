@@ -49,6 +49,21 @@ class RetryingChatModel:
     def model_name(self) -> str:
         return self._model.model_name
 
+    @property
+    def available_models(self) -> tuple[str, ...]:
+        model_names = getattr(self._model, "available_models", None)
+        if model_names is None:
+            return (self.model_name,)
+        return tuple(model_names)
+
+    def select_model(self, model_name: str) -> None:
+        selector = getattr(self._model, "select_model", None)
+        if selector is None:
+            if model_name == self.model_name:
+                return
+            raise RuntimeError("当前模型实现不支持运行时切换。")
+        selector(model_name)
+
     def stream(
         self,
         messages: Sequence[Message],

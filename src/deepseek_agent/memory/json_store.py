@@ -53,6 +53,25 @@ class JsonSessionStore:
             raise SessionStoreError(f"无法删除会话 {resolved_id}：{error}") from error
         return resolved_id
 
+    def rename(self, session_id: str, title: str) -> Session:
+        session = self.load(session_id)
+        try:
+            session.rename(title)
+        except ValueError as error:
+            raise SessionStoreError(str(error)) from error
+        self.save(session)
+        return session
+
+    def move_to_project(
+        self,
+        session_id: str,
+        project_id: str | None,
+    ) -> Session:
+        session = self.load(session_id)
+        session.move_to_project(project_id)
+        self.save(session)
+        return session
+
     def _resolve_id(self, session_id: str) -> str:
         value = session_id.strip().lower()
         if not value or any(character not in "0123456789abcdef" for character in value):

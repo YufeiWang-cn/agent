@@ -8,6 +8,12 @@ from ..conversation import Message
 from .base import StreamEvent, TextDelta, ToolCallRequest
 
 
+DEEPSEEK_MODELS = (
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+)
+
+
 class DeepSeekModel:
     def __init__(self, settings: Settings) -> None:
         # 属性名前面的_表示内部实现，不建议外部直接访问
@@ -23,6 +29,18 @@ class DeepSeekModel:
     @property
     def model_name(self) -> str:
         return self._model_name
+
+    @property
+    def available_models(self) -> tuple[str, ...]:
+        if self._model_name in DEEPSEEK_MODELS:
+            return DEEPSEEK_MODELS
+        return (self._model_name, *DEEPSEEK_MODELS)
+
+    def select_model(self, model_name: str) -> None:
+        normalized_name = model_name.strip()
+        if normalized_name not in self.available_models:
+            raise ValueError(f"不支持的模型：{normalized_name}")
+        self._model_name = normalized_name
 
     def stream(
         self,

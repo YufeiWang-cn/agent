@@ -4,13 +4,41 @@
 
 ## 安装
 
+### 方式一：下载压缩包安装
+
+1. 下载并解压项目。
+2. 打开解压后的项目文件夹，确认其中能看到 `pyproject.toml`。
+3. 在文件夹空白处右键，选择“在终端中打开”。
+4. 首次使用时创建 Conda 环境（已经创建过可跳过）：
+
+```bat
+conda create -n agent python=3.11 -y
+```
+
+5. 安装项目：
+
 ```bat
 conda activate agent
-cd /d D:\wyf\Python\agent
 python -m pip install -e .
 ```
 
-复制 `.env.example` 为 `.env`，然后填写自己的 DeepSeek API Key。
+这里的 `.` 表示当前文件夹，因此终端需要位于包含 `pyproject.toml` 的项目根目录。
+
+### 方式二：使用 Git 安装
+
+熟悉 Git 的用户可以执行：
+
+```bat
+git clone https://github.com/YufeiWang-cn/agent.git
+cd agent
+conda create -n agent python=3.11 -y
+conda activate agent
+python -m pip install -e .
+```
+
+### 安装完成后的必要配置
+
+无论使用上面的哪一种安装方式，都需要在项目根目录中复制 `.env.example`，将副本重命名为 `.env`，然后在 `.env` 中填写自己的 DeepSeek API Key。
 
 `DEEPSEEK_MAX_CONTEXT_TOKENS` 用于设置发送给模型的消息 Token 预算，默认值为 `8000`。这里使用本地近似估算，实际计费 Token 以 DeepSeek 返回的数据为准。
 
@@ -19,6 +47,18 @@ python -m pip install -e .
 `AGENT_WORKSPACE` 是文件工具唯一允许访问的根目录，默认是项目根目录；`AGENT_MAX_FILE_SIZE` 控制单次读取或写入的最大字节数，默认 `100000`。
 
 ## 运行
+
+桌面可视化界面：
+
+```bat
+python gui.py
+```
+
+界面支持流式显示、多轮对话、停止生成、清空对话以及完整展示高风险工具参数的确认窗口。工具调用会显示为默认折叠的状态卡片，点击后可以在带滚轮的固定高度区域中查看完整参数和结果，避免长结果占满聊天窗口。JSON 会自动缩进，常见代码和数据格式会使用深色编辑器主题进行语法着色；点击工具卡片中的“全屏”可以打开最大化查看器，`F11` 切换真正全屏，`Esc` 退出全屏或关闭查看器。左侧栏可以拖动调整宽度或通过顶部按钮折叠；右键项目可以新建、重命名或删除，右键会话可以打开、重命名、移动到项目或删除。删除项目只会把其中的会话移到“未分类”。项目及会话归属会自动保存在 `data/projects.json` 和会话文件中。
+
+输入框中按 `Enter` 发送消息，按 `Shift+Enter` 换行。
+
+命令行界面：
 
 ```bat
 python main.py
