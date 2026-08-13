@@ -7,7 +7,12 @@ from _path_setup import add_project_root_to_path
 
 add_project_root_to_path()
 
-from src.deepseek_agent import Agent, AgentCancelledError
+from src.deepseek_agent import (
+    Agent,
+    AgentCancelledError,
+    AgentEventType,
+    RunStatus,
+)
 from src.deepseek_agent.config import Settings
 from src.deepseek_agent.conversation import Message
 from src.deepseek_agent.memory import JsonProjectStore, JsonSessionStore
@@ -80,10 +85,46 @@ class AgentApiTests(unittest.TestCase):
         agent = Agent(self.settings, model=model, session_store=self.store)
         parts: list[str] = []
 
-        agent.chat("测试", on_text=parts.append)
+        outcome = agent.chat("测试", on_text=parts.append)
 
         self.assertEqual(parts, ["你", "好"])
         self.assertEqual(agent.history()[-1]["content"], "你好")
+        self.assertEqual(outcome.status, RunStatus.COMPLETED)
+        self.assertTrue(outcome.succeeded)
+        self.assertEqual(outcome.final_text, "你好")
+        self.assertEqual(outcome.steps_completed, 1)
+        self.assertEqual(outcome.tool_calls_completed, 0)
+        self.assertTrue(outcome.history_preserved)
+        self.assertIs(agent.last_turn_outcome, outcome)
+        self.assertEqual(agent.run_status, RunStatus.COMPLETED)
+
+    def test_chat_emits_structured_runtime_events(self) -> None:
+        request = ToolCallRequest(
+            id="call_event",
+            name="calculator",
+            arguments='{"expression":"2 + 3"}',
+        )
+        model = CallbackModel([[request], [TextDelta("结果是 5")]])
+        agent = Agent(self.settings, model=model, session_store=self.store)
+        events = []
+
+        outcome = agent.chat("计算", on_event=events.append)
+
+        self.assertEqual(
+            [event.type for event in events],
+            [
+                AgentEventType.TURN_STARTED,
+                AgentEventType.TOOL_CALL,
+                AgentEventType.TOOL_RESULT,
+                AgentEventType.TEXT_DELTA,
+            ],
+        )
+        self.assertIs(events[1].tool_call, request)
+        self.assertEqual(events[2].tool_result, "5")
+        self.assertEqual(events[3].content, "结果是 5")
+        self.assertEqual(outcome.status, RunStatus.COMPLETED)
+        self.assertEqual(outcome.steps_completed, 2)
+        self.assertEqual(outcome.tool_calls_completed, 1)
 
     def test_model_can_be_switched_for_future_requests(self) -> None:
         model = CallbackModel([])
@@ -115,6 +156,29 @@ class AgentApiTests(unittest.TestCase):
 
         self.assertEqual(calls, ["calculator"])
         self.assertEqual(results, ["calculator:5"])
+
+    def test_step_limit_is_not_reported_as_success(self) -> None:
+        requests = [
+            [
+                ToolCallRequest(
+                    id=f"call_{index}",
+                    name="calculator",
+                    arguments='{"expression":"2 + 3"}',
+                )
+            ]
+            for index in range(5)
+        ]
+        model = CallbackModel(requests)
+        agent = Agent(self.settings, model=model, session_store=self.store)
+
+        outcome = agent.chat("持续调用工具")
+
+        self.assertEqual(outcome.status, RunStatus.STEP_LIMIT_REACHED)
+        self.assertFalse(outcome.succeeded)
+        self.assertEqual(outcome.steps_completed, 5)
+        self.assertEqual(outcome.tool_calls_completed, 5)
+        self.assertIn("最大执行步数", outcome.final_text)
+        self.assertIs(agent.last_turn_outcome, outcome)
 
     def test_tool_result_is_recorded_before_callback_failure(self) -> None:
         request = ToolCallRequest(
@@ -155,6 +219,21 @@ class AgentApiTests(unittest.TestCase):
             )
 
         self.assertEqual(agent.history(), [])
+        self.assertEqual(agent.last_turn_outcome.status, RunStatus.CANCELLED)
+        self.assertFalse(agent.last_turn_outcome.history_preserved)
+        self.assertEqual(agent.last_turn_outcome.tool_calls_completed, 0)
+
+    def test_cancelled_before_first_model_call_reports_zero_steps(self) -> None:
+        model = CallbackModel([])
+        agent = Agent(self.settings, model=model, session_store=self.store)
+
+        with self.assertRaises(AgentCancelledError) as caught:
+            agent.chat("立即停止", should_cancel=lambda: True)
+
+        self.assertEqual(caught.exception.outcome.status, RunStatus.CANCELLED)
+        self.assertEqual(caught.exception.outcome.steps_completed, 0)
+        self.assertEqual(agent.history(), [])
+        self.assertEqual(agent.run_status, RunStatus.CANCELLED)
 
     def test_cancel_after_file_write_preserves_tool_records(self) -> None:
         workspace = Path(self.temporary_directory.name) / "workspace"
@@ -190,6 +269,12 @@ class AgentApiTests(unittest.TestCase):
             )
 
         self.assertTrue(caught.exception.tool_records_preserved)
+        self.assertIs(caught.exception.outcome, agent.last_turn_outcome)
+        self.assertEqual(
+            caught.exception.outcome.status,
+            RunStatus.CANCELLED,
+        )
+        self.assertEqual(caught.exception.outcome.tool_calls_completed, 1)
         self.assertEqual(first_path.read_text(encoding="utf-8"), "已写入")
         self.assertFalse(second_path.exists())
         history = agent.history()
@@ -232,6 +317,12 @@ class AgentApiTests(unittest.TestCase):
             agent.chat("修改后让模型失败")
 
         self.assertTrue(agent.last_turn_history_preserved)
+        self.assertEqual(agent.last_turn_outcome.status, RunStatus.FAILED)
+        self.assertEqual(agent.last_turn_outcome.tool_calls_completed, 1)
+        self.assertEqual(
+            agent.last_turn_outcome.error_message,
+            "模型调用发生未预期错误。",
+        )
         self.assertEqual(target.read_text(encoding="utf-8"), "changed")
         self.assertEqual(
             [message["role"] for message in agent.history()],
@@ -254,6 +345,9 @@ class AgentApiTests(unittest.TestCase):
 
         self.assertTrue(agent.last_turn_history_preserved)
         self.assertIn("调用失败", agent.history()[-1]["content"])
+        self.assertEqual(agent.last_turn_outcome.status, RunStatus.FAILED)
+        self.assertEqual(agent.last_turn_outcome.error_message, "disk full")
+        self.assertEqual(agent.run_status, RunStatus.FAILED)
 
     def test_failed_clear_keeps_memory_and_disk_unchanged(self) -> None:
         model = CallbackModel([[TextDelta("回答")]])

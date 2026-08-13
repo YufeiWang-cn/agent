@@ -16,6 +16,7 @@ from tkinter.scrolledtext import ScrolledText
 from typing import Any, Callable
 
 from ..agent import Agent, AgentCancelledError
+from ..runtime import RunStatus, TurnOutcome
 from ..config import Settings
 from ..memory import Project, Session
 from ..models import ToolCallRequest
@@ -2933,7 +2934,7 @@ class AgentApp:
 
     def _run_chat(self, prompt: str) -> None:
         try:
-            self._agent.chat(
+            outcome = self._agent.chat(
                 prompt,
                 on_text=lambda content: self._events.put(("text", content)),
                 on_tool_call=lambda request: self._events.put(
@@ -2945,24 +2946,40 @@ class AgentApp:
                 should_cancel=self._cancel.is_set,
             )
         except AgentCancelledError as error:
+            outcome = error.outcome
             self._events.put(
                 (
                     "cancelled",
-                    (str(error), error.tool_records_preserved),
+                    (
+                        str(error),
+                        (
+                            outcome.history_preserved
+                            if outcome is not None
+                            else error.tool_records_preserved
+                        ),
+                    ),
                 )
             )
         except Exception as error:
+            outcome = self._agent.last_turn_outcome
             self._events.put(
                 (
                     "error",
                     (
                         str(error),
-                        self._agent.last_turn_history_preserved,
+                        (
+                            outcome.history_preserved
+                            if outcome is not None
+                            else self._agent.last_turn_history_preserved
+                        ),
                     ),
                 )
             )
         else:
-            self._events.put(("done", None))
+            if outcome.status is RunStatus.STEP_LIMIT_REACHED:
+                self._events.put(("step_limit_reached", outcome))
+            else:
+                self._events.put(("done", outcome))
 
     def _stop(self) -> None:
         if self._is_busy():
@@ -3049,6 +3066,20 @@ class AgentApp:
                 self._root.after_idle(
                     lambda turn=restore_turn: self._jump_to_turn(turn)
                 )
+            return
+
+        if event_name == "step_limit_reached":
+            outcome: TurnOutcome = payload
+            self._finish_assistant_line()
+            self._finish_turn("未完成")
+            if not self._render_completed_turn():
+                self._render_history()
+            self._refresh_navigation(select_session_id=self._agent.session_id)
+            self._update_header()
+            self._active_prompt = None
+            self._status.set(
+                f"已达到执行步数上限，共执行 {outcome.steps_completed} 步。"
+            )
             return
 
         if event_name == "cancelled":

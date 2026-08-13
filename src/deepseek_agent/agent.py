@@ -1,4 +1,5 @@
 import logging
+import threading
 from pathlib import Path
 from typing import Callable
 
@@ -17,6 +18,7 @@ from .models import ChatModel, DeepSeekModel, TextDelta, ToolCallRequest
 from .observability import RuntimeMetrics
 from .permissions import ConsoleToolConfirmer, ToolConfirmer
 from .reliability import RetryPolicy, RetryingChatModel
+from .runtime import AgentEvent, RunStatus, TurnOutcome
 from .tools import ToolError, ToolRegistry, build_default_registry
 
 
@@ -40,14 +42,17 @@ class AgentCancelledError(RuntimeError):
         message: str,
         *,
         tool_records_preserved: bool = False,
+        outcome: TurnOutcome | None = None,
     ) -> None:
         super().__init__(message)
         self.tool_records_preserved = tool_records_preserved
+        self.outcome = outcome
 
 
 TextCallback = Callable[[str], None]
 ToolCallCallback = Callable[[ToolCallRequest], None]
 ToolResultCallback = Callable[[ToolCallRequest, str], None]
+AgentEventCallback = Callable[[AgentEvent], None]
 CancelCheck = Callable[[], bool]
 
 
@@ -103,6 +108,11 @@ class Agent:
         # 回滚结果状态用于记录最近一次中断所采用的处理方式。
         # 界面根据该状态决定删除临时轮次还是重新渲染工具历史。
         self._last_turn_history_preserved = False
+        # 结构化结果用于准确描述最近一轮的结束原因和实际完成情况。
+        self._last_turn_outcome: TurnOutcome | None = None
+        # 状态锁确保同一个 Agent 实例不会同时执行两个轮次。
+        self._run_status_lock = threading.Lock()
+        self._run_status = RunStatus.IDLE
 
     def run(self) -> None:
         self._print_welcome()
@@ -164,8 +174,9 @@ class Agent:
         on_text: TextCallback | None = None,
         on_tool_call: ToolCallCallback | None = None,
         on_tool_result: ToolResultCallback | None = None,
+        on_event: AgentEventCallback | None = None,
         should_cancel: CancelCheck | None = None,
-    ) -> None:
+    ) -> TurnOutcome:
         """执行一轮 Agent 对话，并通过回调发送流式事件。
 
         本方法只回滚 Conversation 中属于当前轮次的消息。
@@ -176,11 +187,15 @@ class Agent:
         # 回滚检查点：保存本轮开始前的消息数量。
         # 需要回滚时，只删除该位置之后新增的用户消息、助手消息和工具消息，旧会话历史不受影响。
         checkpoint = len(self._conversation)
+        self._begin_turn()
         # 每轮开始先清空上轮的结果，避免界面误用旧的“已保留”状态。
         self._last_turn_history_preserved = False
+        self._last_turn_outcome = None
         self._conversation.add_user(prompt)
+        steps_completed = 0
 
         try:
+            self._emit_event(on_event, AgentEvent.turn_started())
             for _step in range(MAX_AGENT_STEPS):
                 self._raise_if_cancelled(should_cancel)
                 answer_parts: list[str] = []
@@ -195,21 +210,36 @@ class Agent:
                 ):
                     self._raise_if_cancelled(should_cancel)
                     if isinstance(event, TextDelta):
+                        self._emit_event(
+                            on_event,
+                            AgentEvent.text_delta(event.content),
+                        )
                         if on_text is not None:
                             on_text(event.content)
                         answer_parts.append(event.content)
                     elif isinstance(event, ToolCallRequest):
                         tool_requests.append(event)
+                steps_completed += 1
 
                 if not tool_requests:
                     answer = "".join(answer_parts)
                     if not answer:
                         answer = "（模型未返回内容）"
+                        self._emit_event(
+                            on_event,
+                            AgentEvent.text_delta(answer),
+                        )
                         if on_text is not None:
                             on_text(answer)
                     self._conversation.add_assistant(answer)
                     self._save_completed_turn(checkpoint)
-                    return
+                    return self._finish_turn_outcome(
+                        status=RunStatus.COMPLETED,
+                        final_text=answer,
+                        steps_completed=steps_completed,
+                        checkpoint=checkpoint,
+                        history_preserved=True,
+                    )
 
                 self._conversation.add_assistant_tool_calls(
                     [request.as_message_dict() for request in tool_requests],
@@ -219,48 +249,104 @@ class Agent:
                     tool_requests,
                     on_tool_call=on_tool_call,
                     on_tool_result=on_tool_result,
+                    on_event=on_event,
                     should_cancel=should_cancel,
                 )
+
+            message = f"Agent 已达到最大执行步数 {MAX_AGENT_STEPS}，任务已停止。"
+            self._conversation.add_assistant(message)
+            self._save_completed_turn(checkpoint)
+            self._emit_event(on_event, AgentEvent.text_delta(message))
+            if on_text is not None:
+                on_text(message)
+            return self._finish_turn_outcome(
+                status=RunStatus.STEP_LIMIT_REACHED,
+                final_text=message,
+                steps_completed=steps_completed,
+                checkpoint=checkpoint,
+                history_preserved=True,
+            )
         except AgentCancelledError as error:
             # 回滚策略一：如果已有工具结果，外部状态可能已经改变，不能只删除对话记录。
             # 此时保留完整工具链，并补齐尚未执行的工具结果。
-            if self._preserve_completed_tool_records(
+            completed_tool_calls = self._count_tool_results(checkpoint)
+            records_preserved = self._preserve_completed_tool_records(
                 checkpoint,
                 pending_result="用户停止了本轮任务，本工具未执行。",
                 final_message=(
                     "本轮已停止。停止前已完成的工具操作及其记录已保留。"
                 ),
-            ):
+            )
+            if records_preserved:
                 error.tool_records_preserved = True
                 self._last_turn_history_preserved = True
-                # 已完成工具的记录必须成功落盘，否则调用方需要明确处理保存失败。
-                self._save_session()
             else:
                 # 回滚策略二适用于没有任何工具完成的情况。
                 # 此时本轮没有已知外部副作用，因此可以安全地截断到检查点。
                 self._conversation.truncate(checkpoint)
+            outcome = self._finish_turn_outcome(
+                status=RunStatus.CANCELLED,
+                final_text=self._latest_assistant_text(checkpoint),
+                steps_completed=steps_completed,
+                checkpoint=checkpoint,
+                history_preserved=error.tool_records_preserved,
+                error_message=str(error),
+                tool_calls_completed=completed_tool_calls,
+            )
+            error.outcome = outcome
+            if records_preserved:
+                try:
+                    # 已完成工具的记录必须成功落盘，否则本轮最终状态应改为失败。
+                    self._save_session()
+                except Exception as save_error:
+                    self._finish_turn_outcome(
+                        status=RunStatus.FAILED,
+                        final_text=self._latest_assistant_text(checkpoint),
+                        steps_completed=steps_completed,
+                        checkpoint=checkpoint,
+                        history_preserved=True,
+                        error_message=str(save_error),
+                    )
+                    raise
             raise
         except Exception as error:
             # 模型异常与用户停止使用同一套回滚判断。
             # 已经完成工具时保留真实记录，尚未完成任何工具时回滚临时消息。
-            if self._preserve_completed_tool_records(
+            completed_tool_calls = self._count_tool_results(checkpoint)
+            records_preserved = self._preserve_completed_tool_records(
                 checkpoint,
                 pending_result="本轮因调用失败而中断，本工具未执行。",
                 final_message=f"本轮因调用失败而中断：{error}",
-            ):
+            )
+            if records_preserved:
                 self._last_turn_history_preserved = True
-                # 已完成工具的记录必须成功落盘，否则调用方需要明确处理保存失败。
-                self._save_session()
             else:
                 # 这里只回滚 Conversation，不会撤销文件系统或其他外部操作。
                 self._conversation.truncate(checkpoint)
+            self._finish_turn_outcome(
+                status=RunStatus.FAILED,
+                final_text=self._latest_assistant_text(checkpoint),
+                steps_completed=steps_completed,
+                checkpoint=checkpoint,
+                history_preserved=self._last_turn_history_preserved,
+                error_message=str(error),
+                tool_calls_completed=completed_tool_calls,
+            )
+            if records_preserved:
+                try:
+                    # 已完成工具的记录必须成功落盘，否则保留失败状态并继续抛出保存异常。
+                    self._save_session()
+                except Exception as save_error:
+                    self._finish_turn_outcome(
+                        status=RunStatus.FAILED,
+                        final_text=self._latest_assistant_text(checkpoint),
+                        steps_completed=steps_completed,
+                        checkpoint=checkpoint,
+                        history_preserved=True,
+                        error_message=str(save_error),
+                    )
+                    raise
             raise
-
-        message = f"Agent 已达到最大执行步数 {MAX_AGENT_STEPS}，任务已停止。"
-        self._conversation.add_assistant(message)
-        self._save_completed_turn(checkpoint)
-        if on_text is not None:
-            on_text(message)
 
     def _execute_tools(
         self,
@@ -268,6 +354,7 @@ class Agent:
         *,
         on_tool_call: ToolCallCallback | None = None,
         on_tool_result: ToolResultCallback | None = None,
+        on_event: AgentEventCallback | None = None,
         should_cancel: CancelCheck | None = None,
     ) -> None:
         for request in requests:
@@ -275,15 +362,30 @@ class Agent:
             # 工具一旦开始执行就应完整结束，从而避免强行中断写入造成半写状态。
             # 工具执行结束后的记录由统一的回滚策略处理。
             self._raise_if_cancelled(should_cancel)
+            self._emit_event(
+                on_event,
+                AgentEvent.tool_call_started(request),
+            )
             if on_tool_call is not None:
                 on_tool_call(request)
             try:
                 tool = self._tools.get(request.name)
-                if tool.requires_confirmation and not self._confirmer.confirm(
-                    tool,
-                    request.arguments,
-                ):
-                    result = "用户拒绝执行该工具。"
+                if tool.requires_confirmation:
+                    self._set_run_status(RunStatus.WAITING_APPROVAL)
+                    try:
+                        confirmed = self._confirmer.confirm(
+                            tool,
+                            request.arguments,
+                        )
+                    finally:
+                        self._set_run_status(RunStatus.RUNNING)
+                    if not confirmed:
+                        result = "用户拒绝执行该工具。"
+                    else:
+                        result = self._tools.execute(
+                            request.name,
+                            request.arguments,
+                        )
                 else:
                     result = self._tools.execute(request.name, request.arguments)
             except ToolError as error:
@@ -297,9 +399,80 @@ class Agent:
                 name=request.name,
                 content=result,
             )
+            self._emit_event(
+                on_event,
+                AgentEvent.tool_call_completed(request, result),
+            )
             # 界面回调发生异常时，已经写入的工具结果仍可阻止错误回滚。
             if on_tool_result is not None:
                 on_tool_result(request, result)
+
+    @staticmethod
+    def _emit_event(
+        callback: AgentEventCallback | None,
+        event: AgentEvent,
+    ) -> None:
+        """在调用方订阅统一事件流时发送一个运行事件。"""
+        if callback is not None:
+            callback(event)
+
+    def _finish_turn_outcome(
+        self,
+        *,
+        status: RunStatus,
+        final_text: str | None,
+        steps_completed: int,
+        checkpoint: int,
+        history_preserved: bool,
+        error_message: str | None = None,
+        tool_calls_completed: int | None = None,
+    ) -> TurnOutcome:
+        """创建并保存最近一轮的结构化执行结果。"""
+        outcome = TurnOutcome(
+            status=status,
+            final_text=final_text,
+            steps_completed=steps_completed,
+            tool_calls_completed=(
+                self._count_tool_results(checkpoint)
+                if tool_calls_completed is None
+                else tool_calls_completed
+            ),
+            history_preserved=history_preserved,
+            error_message=error_message,
+        )
+        self._last_turn_outcome = outcome
+        self._set_run_status(status)
+        return outcome
+
+    def _begin_turn(self) -> None:
+        """以原子方式开始新轮次，并拒绝同一实例上的并发调用。"""
+        with self._run_status_lock:
+            if self._run_status.active:
+                raise RuntimeError("当前 Agent 已经有一轮任务正在执行。")
+            self._run_status = RunStatus.RUNNING
+
+    def _set_run_status(self, status: RunStatus) -> None:
+        """在线程锁保护下更新当前轮次的运行状态。"""
+        with self._run_status_lock:
+            self._run_status = status
+
+    def _count_tool_results(self, checkpoint: int) -> int:
+        """统计当前轮次中已经拥有结果记录的工具调用数量。"""
+        return sum(
+            1
+            for message in self._conversation.messages[checkpoint:]
+            if message.get("role") == "tool"
+        )
+
+    def _latest_assistant_text(self, checkpoint: int) -> str | None:
+        """返回当前轮次最后一条非空助手文本。"""
+        for message in reversed(self._conversation.messages[checkpoint:]):
+            if message.get("role") != "assistant":
+                continue
+            content = message.get("content")
+            if content:
+                return str(content)
+        return None
 
     @staticmethod
     def _raise_if_cancelled(should_cancel: CancelCheck | None) -> None:
@@ -370,6 +543,17 @@ class Agent:
     @property
     def last_turn_history_preserved(self) -> bool:
         return self._last_turn_history_preserved
+
+    @property
+    def last_turn_outcome(self) -> TurnOutcome | None:
+        """返回最近一轮已经结束的结构化结果。"""
+        return self._last_turn_outcome
+
+    @property
+    def run_status(self) -> RunStatus:
+        """返回 Agent 当前轮次的实时运行状态。"""
+        with self._run_status_lock:
+            return self._run_status
 
     @property
     def model_name(self) -> str:
