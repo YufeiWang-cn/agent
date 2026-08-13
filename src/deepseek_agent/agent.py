@@ -208,7 +208,7 @@ class Agent:
                         if on_text is not None:
                             on_text(answer)
                     self._conversation.add_assistant(answer)
-                    self._save_session_safely()
+                    self._save_completed_turn(checkpoint)
                     return
 
                 self._conversation.add_assistant_tool_calls(
@@ -233,7 +233,8 @@ class Agent:
             ):
                 error.tool_records_preserved = True
                 self._last_turn_history_preserved = True
-                self._save_session_safely()
+                # 已完成工具的记录必须成功落盘，否则调用方需要明确处理保存失败。
+                self._save_session()
             else:
                 # 回滚策略二适用于没有任何工具完成的情况。
                 # 此时本轮没有已知外部副作用，因此可以安全地截断到检查点。
@@ -248,7 +249,8 @@ class Agent:
                 final_message=f"本轮因调用失败而中断：{error}",
             ):
                 self._last_turn_history_preserved = True
-                self._save_session_safely()
+                # 已完成工具的记录必须成功落盘，否则调用方需要明确处理保存失败。
+                self._save_session()
             else:
                 # 这里只回滚 Conversation，不会撤销文件系统或其他外部操作。
                 self._conversation.truncate(checkpoint)
@@ -256,7 +258,7 @@ class Agent:
 
         message = f"Agent 已达到最大执行步数 {MAX_AGENT_STEPS}，任务已停止。"
         self._conversation.add_assistant(message)
-        self._save_session_safely()
+        self._save_completed_turn(checkpoint)
         if on_text is not None:
             on_text(message)
 
@@ -289,13 +291,15 @@ class Agent:
             except Exception as error:
                 result = f"工具发生未预期错误：{error}"
 
-            if on_tool_result is not None:
-                on_tool_result(request, result)
+            # 工具可能已经改变文件等外部状态，因此必须先把真实结果写入历史。
             self._conversation.add_tool_result(
                 tool_call_id=request.id,
                 name=request.name,
                 content=result,
             )
+            # 界面回调发生异常时，已经写入的工具结果仍可阻止错误回滚。
+            if on_tool_result is not None:
+                on_tool_result(request, result)
 
     @staticmethod
     def _raise_if_cancelled(should_cancel: CancelCheck | None) -> None:
@@ -349,6 +353,19 @@ class Agent:
         # 用一条终止消息闭合当前轮次，使重新加载会话时能解释中断原因。
         self._conversation.add_assistant(final_message)
         return True
+
+    def _save_completed_turn(self, checkpoint: int) -> None:
+        """根据当前轮次是否包含工具结果选择严格或尽力保存。"""
+        turn_messages = self._conversation.messages[checkpoint:]
+        has_tool_results = any(
+            message.get("role") == "tool" for message in turn_messages
+        )
+        if has_tool_results:
+            # 工具结果可能对应已经生效的外部副作用，因此保存失败必须向上抛出。
+            self._save_session()
+            return
+        # 纯文本回复没有外部副作用，因此沿用尽力保存以保证对话可继续使用。
+        self._save_session_safely()
 
     @property
     def last_turn_history_preserved(self) -> bool:
@@ -534,15 +551,21 @@ class Agent:
             return True
 
         if command == "/clear":
-            self._conversation.clear()
-            self._save_session_safely()
-            print("当前对话上下文已清空。")
+            try:
+                self.clear_conversation()
+            except (OSError, SessionStoreError) as error:
+                print(f"清空失败：{error}")
+            else:
+                print("当前对话上下文已清空。")
             return True
 
         if command == "/new":
-            self._save_session_safely()
-            self._start_new_session()
-            print(f"已创建新会话：{self._session.id[:8]}")
+            try:
+                session = self.start_new_session()
+            except (OSError, SessionStoreError, ProjectStoreError) as error:
+                print(f"创建新会话失败：{error}")
+            else:
+                print(f"已创建新会话：{session.id[:8]}")
             return True
 
         if command == "/save":

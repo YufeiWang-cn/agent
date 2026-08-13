@@ -116,6 +116,28 @@ class AgentApiTests(unittest.TestCase):
         self.assertEqual(calls, ["calculator"])
         self.assertEqual(results, ["calculator:5"])
 
+    def test_tool_result_is_recorded_before_callback_failure(self) -> None:
+        request = ToolCallRequest(
+            id="call_callback",
+            name="calculator",
+            arguments='{"expression":"2 + 3"}',
+        )
+        model = CallbackModel([[request]])
+        agent = Agent(self.settings, model=model, session_store=self.store)
+
+        def fail_after_tool(_request, _result: str) -> None:
+            raise RuntimeError("UI callback failed")
+
+        with self.assertRaisesRegex(RuntimeError, "UI callback failed"):
+            agent.chat("计算", on_tool_result=fail_after_tool)
+
+        self.assertTrue(agent.last_turn_history_preserved)
+        self.assertEqual(
+            [message["role"] for message in agent.history()],
+            ["user", "assistant", "tool", "assistant"],
+        )
+        self.assertEqual(agent.history()[2]["content"], "5")
+
     def test_cancelled_chat_rolls_back_incomplete_turn(self) -> None:
         model = CallbackModel([[TextDelta("部分"), TextDelta("回答")]])
         agent = Agent(self.settings, model=model, session_store=self.store)
@@ -217,6 +239,22 @@ class AgentApiTests(unittest.TestCase):
         )
         self.assertIn("调用失败", agent.history()[-1]["content"])
 
+    def test_tool_turn_raises_when_its_records_cannot_be_saved(self) -> None:
+        request = ToolCallRequest(
+            id="call_save",
+            name="calculator",
+            arguments='{"expression":"2 + 3"}',
+        )
+        model = CallbackModel([[request], [TextDelta("结果是 5")]])
+        agent = Agent(self.settings, model=model, session_store=self.store)
+
+        with patch.object(self.store, "save", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                agent.chat("计算")
+
+        self.assertTrue(agent.last_turn_history_preserved)
+        self.assertIn("调用失败", agent.history()[-1]["content"])
+
     def test_failed_clear_keeps_memory_and_disk_unchanged(self) -> None:
         model = CallbackModel([[TextDelta("回答")]])
         agent = Agent(self.settings, model=model, session_store=self.store)
@@ -240,6 +278,30 @@ class AgentApiTests(unittest.TestCase):
         with patch.object(self.store, "save", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 agent.start_new_session()
+
+        self.assertEqual(agent.session_id, session_id)
+        self.assertEqual(agent.history(), history_before)
+
+    def test_cli_clear_uses_transactional_public_method(self) -> None:
+        model = CallbackModel([[TextDelta("回答")]])
+        agent = Agent(self.settings, model=model, session_store=self.store)
+        agent.chat("应保留的问题")
+        history_before = agent.history()
+
+        with patch.object(self.store, "save", side_effect=OSError("disk full")):
+            self.assertTrue(agent._handle_command("/clear"))
+
+        self.assertEqual(agent.history(), history_before)
+
+    def test_cli_new_does_not_switch_when_current_session_save_fails(self) -> None:
+        model = CallbackModel([[TextDelta("回答")]])
+        agent = Agent(self.settings, model=model, session_store=self.store)
+        agent.chat("原会话")
+        session_id = agent.session_id
+        history_before = agent.history()
+
+        with patch.object(self.store, "save", side_effect=OSError("disk full")):
+            self.assertTrue(agent._handle_command("/new"))
 
         self.assertEqual(agent.session_id, session_id)
         self.assertEqual(agent.history(), history_before)
