@@ -5,6 +5,8 @@ from .base import JsonObject, Tool, ToolExecutionError
 class ReadTextFileTool(Tool):
     name = "read_text_file"
     description = "读取工作目录内不超过大小限制的 UTF-8 文本文件。"
+    retryable = True
+    idempotent = True
     parameters: JsonObject = {
         "type": "object",
         "properties": {

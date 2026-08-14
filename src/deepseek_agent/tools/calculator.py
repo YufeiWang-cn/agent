@@ -29,6 +29,8 @@ UNARY_OPERATORS: dict[type[ast.unaryop], Callable[[Number], Number]] = {
 class CalculatorTool(Tool):
     name = "calculator"
     description = "安全计算数学表达式，支持加减乘除、整除、取余、乘方和括号。"
+    retryable = True
+    idempotent = True
     parameters: JsonObject = {
         "type": "object",
         "properties": {

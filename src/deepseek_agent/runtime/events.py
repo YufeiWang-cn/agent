@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from ..models import ToolCallRequest
+from ..tool_execution import ToolExecutionRecord
 
 
 class AgentEventType(str, Enum):
@@ -21,6 +22,7 @@ class AgentEvent:
     content: str | None = None
     tool_call: ToolCallRequest | None = None
     tool_result: str | None = None
+    tool_record: ToolExecutionRecord | None = None
 
     @classmethod
     def turn_started(cls) -> "AgentEvent":
@@ -41,11 +43,12 @@ class AgentEvent:
     def tool_call_completed(
         cls,
         request: ToolCallRequest,
-        result: str,
+        record: ToolExecutionRecord,
     ) -> "AgentEvent":
         """创建包含工具真实执行结果的事件。"""
         return cls(
             type=AgentEventType.TOOL_RESULT,
             tool_call=request,
-            tool_result=result,
+            tool_result=record.model_result,
+            tool_record=record,
         )

@@ -1,0 +1,260 @@
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from enum import Enum
+
+from .models import ToolCallRequest
+from .permissions import ToolConfirmer
+from .tools import (
+    JsonObject,
+    Tool,
+    ToolEffect,
+    ToolError,
+    ToolExecutionError,
+    ToolRegistry,
+)
+
+
+class ToolExecutionStatus(str, Enum):
+    """表示一次工具调用的最终执行状态。"""
+
+    SUCCEEDED = "succeeded"
+    REJECTED = "rejected"
+    FAILED = "failed"
+    RESULT_UNKNOWN = "result_unknown"
+
+    @property
+    def succeeded(self) -> bool:
+        """返回工具是否已经明确执行成功。"""
+        return self is ToolExecutionStatus.SUCCEEDED
+
+
+@dataclass(frozen=True, slots=True)
+class ToolExecutionRecord:
+    """保存一次工具调用的参数、策略、结果和时间信息。"""
+
+    call_id: str
+    tool_name: str
+    raw_arguments: str
+    arguments: JsonObject | None
+    status: ToolExecutionStatus
+    effect: ToolEffect
+    model_result: str
+    started_at: datetime
+    finished_at: datetime
+    confirmation_requested: bool
+    confirmation_granted: bool | None
+    retryable: bool
+    idempotent: bool
+    supports_rollback: bool
+    timeout_seconds: float | None
+    execution_started: bool
+    error_message: str | None = None
+
+    @property
+    def duration_seconds(self) -> float:
+        """返回本次工具调用从解析到完成所经过的秒数。"""
+        return max(0.0, (self.finished_at - self.started_at).total_seconds())
+
+    @property
+    def may_have_side_effect(self) -> bool:
+        """返回工具是否已经或可能改变了外部状态。"""
+        if self.effect is ToolEffect.READ_ONLY or not self.execution_started:
+            return False
+        return self.status in {
+            ToolExecutionStatus.SUCCEEDED,
+            ToolExecutionStatus.RESULT_UNKNOWN,
+        }
+
+    @property
+    def can_retry_safely(self) -> bool:
+        """返回系统是否可以依据工具声明安全地重试本次调用。"""
+        return (
+            self.status in {
+                ToolExecutionStatus.FAILED,
+                ToolExecutionStatus.RESULT_UNKNOWN,
+            }
+            and self.retryable
+            and self.idempotent
+        )
+
+
+Clock = Callable[[], datetime]
+ConfirmationStateCallback = Callable[[bool], None]
+
+
+class ToolExecutor:
+    """统一解析、确认并执行模型请求的工具调用。"""
+
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        confirmer: ToolConfirmer,
+        *,
+        clock: Clock | None = None,
+    ) -> None:
+        self._registry = registry
+        self._confirmer = confirmer
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+
+    def execute(
+        self,
+        request: ToolCallRequest,
+        *,
+        on_confirmation_state: ConfirmationStateCallback | None = None,
+    ) -> ToolExecutionRecord:
+        """执行一次工具调用，并始终返回描述真实结果的结构化记录。"""
+        started_at = self._clock()
+        tool: Tool | None = None
+        arguments: JsonObject | None = None
+        confirmation_requested = False
+        confirmation_granted: bool | None = None
+        execution_started = False
+
+        try:
+            tool, arguments = self._registry.prepare(
+                request.name,
+                request.arguments,
+            )
+            confirmation_requested = tool.requires_confirmation
+            if confirmation_requested:
+                self._notify_confirmation_state(on_confirmation_state, True)
+                try:
+                    confirmation_granted = self._confirmer.confirm(
+                        tool,
+                        request.arguments,
+                    )
+                finally:
+                    self._notify_confirmation_state(on_confirmation_state, False)
+                if not confirmation_granted:
+                    return self._record(
+                        request,
+                        tool=tool,
+                        arguments=arguments,
+                        status=ToolExecutionStatus.REJECTED,
+                        model_result="用户拒绝执行该工具。",
+                        started_at=started_at,
+                        confirmation_requested=True,
+                        confirmation_granted=False,
+                        execution_started=False,
+                    )
+
+            execution_started = True
+            result = tool.execute(arguments)
+            return self._record(
+                request,
+                tool=tool,
+                arguments=arguments,
+                status=ToolExecutionStatus.SUCCEEDED,
+                model_result=result,
+                started_at=started_at,
+                confirmation_requested=confirmation_requested,
+                confirmation_granted=confirmation_granted,
+                execution_started=True,
+            )
+        except ToolExecutionError as error:
+            status = (
+                ToolExecutionStatus.RESULT_UNKNOWN
+                if error.side_effect_possible
+                else ToolExecutionStatus.FAILED
+            )
+            return self._record(
+                request,
+                tool=tool,
+                arguments=arguments,
+                status=status,
+                model_result=f"工具执行失败：{error}",
+                started_at=started_at,
+                confirmation_requested=confirmation_requested,
+                confirmation_granted=confirmation_granted,
+                execution_started=execution_started,
+                error_message=str(error),
+            )
+        except ToolError as error:
+            return self._record(
+                request,
+                tool=tool,
+                arguments=arguments,
+                status=ToolExecutionStatus.FAILED,
+                model_result=f"工具执行失败：{error}",
+                started_at=started_at,
+                confirmation_requested=confirmation_requested,
+                confirmation_granted=confirmation_granted,
+                execution_started=execution_started,
+                error_message=str(error),
+            )
+        except Exception as error:
+            status = (
+                ToolExecutionStatus.RESULT_UNKNOWN
+                if execution_started
+                and tool is not None
+                and tool.effect is not ToolEffect.READ_ONLY
+                else ToolExecutionStatus.FAILED
+            )
+            return self._record(
+                request,
+                tool=tool,
+                arguments=arguments,
+                status=status,
+                model_result=f"工具发生未预期错误：{error}",
+                started_at=started_at,
+                confirmation_requested=confirmation_requested,
+                confirmation_granted=confirmation_granted,
+                execution_started=execution_started,
+                error_message=str(error),
+            )
+
+    @staticmethod
+    def _notify_confirmation_state(
+        callback: ConfirmationStateCallback | None,
+        waiting: bool,
+    ) -> None:
+        """在调用方需要同步运行状态时通知确认阶段的开始或结束。"""
+        if callback is not None:
+            callback(waiting)
+
+    def _record(
+        self,
+        request: ToolCallRequest,
+        *,
+        tool: Tool | None,
+        arguments: JsonObject | None,
+        status: ToolExecutionStatus,
+        model_result: str,
+        started_at: datetime,
+        confirmation_requested: bool,
+        confirmation_granted: bool | None,
+        execution_started: bool,
+        error_message: str | None = None,
+    ) -> ToolExecutionRecord:
+        """使用工具声明和实际结果创建不可变的执行记录。"""
+        return ToolExecutionRecord(
+            call_id=request.id,
+            tool_name=request.name,
+            raw_arguments=request.arguments,
+            arguments=arguments,
+            status=status,
+            effect=tool.effect if tool is not None else ToolEffect.READ_ONLY,
+            model_result=model_result,
+            started_at=started_at,
+            finished_at=self._clock(),
+            confirmation_requested=confirmation_requested,
+            confirmation_granted=confirmation_granted,
+            retryable=tool.retryable if tool is not None else False,
+            idempotent=tool.idempotent if tool is not None else False,
+            supports_rollback=(
+                tool.supports_rollback if tool is not None else False
+            ),
+            timeout_seconds=(
+                tool.timeout_seconds if tool is not None else None
+            ),
+            execution_started=execution_started,
+            error_message=error_message,
+        )
+
+
+__all__ = [
+    "ToolExecutionRecord",
+    "ToolExecutionStatus",
+    "ToolExecutor",
+]

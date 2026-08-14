@@ -1,13 +1,14 @@
 import json
 
 from ..workspace import WorkspaceAccessError, WorkspaceGuard
-from .base import JsonObject, Tool, ToolExecutionError
+from .base import JsonObject, Tool, ToolEffect, ToolExecutionError
 
 
 class ReplaceTextTool(Tool):
     name = "replace_text"
     description = "在工作目录内的 UTF-8 文本文件中精确替换唯一一处文本。"
     requires_confirmation = True
+    effect = ToolEffect.IRREVERSIBLE_WRITE
     parameters: JsonObject = {
         "type": "object",
         "properties": {

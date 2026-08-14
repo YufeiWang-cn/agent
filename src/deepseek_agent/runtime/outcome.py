@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from enum import Enum
 
+from ..tool_execution import ToolExecutionRecord
+
 
 class RunStatus(str, Enum):
     """表示 Agent 当前轮次所处的运行状态。"""
@@ -44,6 +46,7 @@ class TurnOutcome:
     tool_calls_completed: int
     history_preserved: bool
     error_message: str | None = None
+    tool_records: tuple[ToolExecutionRecord, ...] = ()
 
     @property
     def succeeded(self) -> bool:

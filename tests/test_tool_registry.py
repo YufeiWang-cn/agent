@@ -9,6 +9,7 @@ from src.deepseek_agent.tools import (
     CalculatorTool,
     DateTimeTool,
     ToolExecutionError,
+    ToolEffect,
     ToolNotFoundError,
     ToolRegistry,
 )
@@ -21,6 +22,14 @@ class ToolRegistryTests(unittest.TestCase):
     def test_schemas_are_exposed_to_the_model(self) -> None:
         names = [schema["function"]["name"] for schema in self.registry.schemas]
         self.assertEqual(names, ["calculator", "get_current_time"])
+
+    def test_tool_metadata_describes_execution_policy(self) -> None:
+        calculator = self.registry.get("calculator")
+
+        self.assertEqual(calculator.effect, ToolEffect.READ_ONLY)
+        self.assertTrue(calculator.retryable)
+        self.assertTrue(calculator.idempotent)
+        self.assertFalse(calculator.supports_rollback)
 
     def test_json_arguments_are_dispatched(self) -> None:
         result = self.registry.execute("calculator", '{"expression":"12 * 3"}')

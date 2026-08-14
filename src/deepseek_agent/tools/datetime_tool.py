@@ -11,6 +11,7 @@ WEEKDAYS = ("星期一", "星期二", "星期三", "星期四", "星期五", "�
 class DateTimeTool(Tool):
     name = "get_current_time"
     description = "获取指定 IANA 时区的当前日期、时间和星期。"
+    retryable = True
     parameters: JsonObject = {
         "type": "object",
         "properties": {

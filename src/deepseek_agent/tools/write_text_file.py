@@ -1,13 +1,14 @@
 import json
 
 from ..workspace import WorkspaceAccessError, WorkspaceGuard
-from .base import JsonObject, Tool, ToolExecutionError
+from .base import JsonObject, Tool, ToolEffect, ToolExecutionError
 
 
 class WriteTextFileTool(Tool):
     name = "write_text_file"
     description = "在工作目录内创建或完整覆盖一个 UTF-8 文本文件。"
     requires_confirmation = True
+    effect = ToolEffect.IRREVERSIBLE_WRITE
     parameters: JsonObject = {
         "type": "object",
         "properties": {

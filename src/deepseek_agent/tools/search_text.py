@@ -13,6 +13,8 @@ MAX_RESULT_LINE_LENGTH = 500
 class SearchTextTool(Tool):
     name = "search_text"
     description = "递归搜索工作目录内 UTF-8 文本文件中的文本，并返回匹配位置。"
+    retryable = True
+    idempotent = True
     parameters: JsonObject = {
         "type": "object",
         "properties": {

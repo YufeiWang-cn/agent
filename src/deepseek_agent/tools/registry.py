@@ -32,6 +32,11 @@ class ToolRegistry:
         return tuple(self._tools)
 
     def execute(self, name: str, raw_arguments: str) -> str:
+        tool, arguments = self.prepare(name, raw_arguments)
+        return tool.execute(arguments)
+
+    def prepare(self, name: str, raw_arguments: str) -> tuple[Tool, JsonObject]:
+        """解析一次工具调用，并返回目标工具及经过基础校验的参数。"""
         tool = self.get(name)
 
         try:
@@ -44,4 +49,4 @@ class ToolRegistry:
         if not isinstance(arguments, dict):
             raise ToolExecutionError(f"工具 {name} 的参数必须是 JSON 对象。")
 
-        return tool.execute(arguments)
+        return tool, arguments

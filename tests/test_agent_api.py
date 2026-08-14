@@ -12,6 +12,8 @@ from src.deepseek_agent import (
     AgentCancelledError,
     AgentEventType,
     RunStatus,
+    ToolEffect,
+    ToolExecutionStatus,
 )
 from src.deepseek_agent.config import Settings
 from src.deepseek_agent.conversation import Message
@@ -121,10 +123,16 @@ class AgentApiTests(unittest.TestCase):
         )
         self.assertIs(events[1].tool_call, request)
         self.assertEqual(events[2].tool_result, "5")
+        self.assertEqual(
+            events[2].tool_record.status,
+            ToolExecutionStatus.SUCCEEDED,
+        )
+        self.assertEqual(events[2].tool_record.effect, ToolEffect.READ_ONLY)
         self.assertEqual(events[3].content, "结果是 5")
         self.assertEqual(outcome.status, RunStatus.COMPLETED)
         self.assertEqual(outcome.steps_completed, 2)
         self.assertEqual(outcome.tool_calls_completed, 1)
+        self.assertEqual(outcome.tool_records, (events[2].tool_record,))
 
     def test_model_can_be_switched_for_future_requests(self) -> None:
         model = CallbackModel([])

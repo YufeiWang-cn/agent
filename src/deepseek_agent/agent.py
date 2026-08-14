@@ -6,6 +6,7 @@ from typing import Callable
 from .config import PROJECT_ROOT, Settings
 from .context import ContextManager
 from .conversation import Conversation, Message
+from .tool_execution import ToolExecutionRecord, ToolExecutor
 from .memory import (
     JsonProjectStore,
     JsonSessionStore,
@@ -19,7 +20,7 @@ from .observability import RuntimeMetrics
 from .permissions import ConsoleToolConfirmer, ToolConfirmer
 from .reliability import RetryPolicy, RetryingChatModel
 from .runtime import AgentEvent, RunStatus, TurnOutcome
-from .tools import ToolError, ToolRegistry, build_default_registry
+from .tools import ToolRegistry, build_default_registry
 
 
 EXIT_COMMANDS = {"/exit", "exit", "quit", "q", "退出"}
@@ -103,6 +104,7 @@ class Agent:
         self._confirmer = (
             confirmer if confirmer is not None else ConsoleToolConfirmer()
         )
+        self._tool_executor = ToolExecutor(self._tools, self._confirmer)
         self._session = self._restore_latest_session()
         self._running = True
         # 回滚结果状态用于记录最近一次中断所采用的处理方式。
@@ -113,6 +115,7 @@ class Agent:
         # 状态锁确保同一个 Agent 实例不会同时执行两个轮次。
         self._run_status_lock = threading.Lock()
         self._run_status = RunStatus.IDLE
+        self._current_turn_tool_records: list[ToolExecutionRecord] = []
 
     def run(self) -> None:
         self._print_welcome()
@@ -191,6 +194,7 @@ class Agent:
         # 每轮开始先清空上轮的结果，避免界面误用旧的“已保留”状态。
         self._last_turn_history_preserved = False
         self._last_turn_outcome = None
+        self._current_turn_tool_records = []
         self._conversation.add_user(prompt)
         steps_completed = 0
 
@@ -356,7 +360,8 @@ class Agent:
         on_tool_result: ToolResultCallback | None = None,
         on_event: AgentEventCallback | None = None,
         should_cancel: CancelCheck | None = None,
-    ) -> None:
+    ) -> list[ToolExecutionRecord]:
+        records: list[ToolExecutionRecord] = []
         for request in requests:
             # 工具开始前需要检查停止信号。
             # 工具一旦开始执行就应完整结束，从而避免强行中断写入造成半写状态。
@@ -368,44 +373,33 @@ class Agent:
             )
             if on_tool_call is not None:
                 on_tool_call(request)
-            try:
-                tool = self._tools.get(request.name)
-                if tool.requires_confirmation:
-                    self._set_run_status(RunStatus.WAITING_APPROVAL)
-                    try:
-                        confirmed = self._confirmer.confirm(
-                            tool,
-                            request.arguments,
-                        )
-                    finally:
-                        self._set_run_status(RunStatus.RUNNING)
-                    if not confirmed:
-                        result = "用户拒绝执行该工具。"
-                    else:
-                        result = self._tools.execute(
-                            request.name,
-                            request.arguments,
-                        )
-                else:
-                    result = self._tools.execute(request.name, request.arguments)
-            except ToolError as error:
-                result = f"工具执行失败：{error}"
-            except Exception as error:
-                result = f"工具发生未预期错误：{error}"
+            record = self._tool_executor.execute(
+                request,
+                on_confirmation_state=self._handle_confirmation_state,
+            )
+            records.append(record)
+            self._current_turn_tool_records.append(record)
 
             # 工具可能已经改变文件等外部状态，因此必须先把真实结果写入历史。
             self._conversation.add_tool_result(
-                tool_call_id=request.id,
-                name=request.name,
-                content=result,
+                tool_call_id=record.call_id,
+                name=record.tool_name,
+                content=record.model_result,
             )
             self._emit_event(
                 on_event,
-                AgentEvent.tool_call_completed(request, result),
+                AgentEvent.tool_call_completed(request, record),
             )
             # 界面回调发生异常时，已经写入的工具结果仍可阻止错误回滚。
             if on_tool_result is not None:
-                on_tool_result(request, result)
+                on_tool_result(request, record.model_result)
+        return records
+
+    def _handle_confirmation_state(self, waiting: bool) -> None:
+        """根据工具确认阶段更新 Agent 的实时运行状态。"""
+        self._set_run_status(
+            RunStatus.WAITING_APPROVAL if waiting else RunStatus.RUNNING
+        )
 
     @staticmethod
     def _emit_event(
@@ -439,6 +433,7 @@ class Agent:
             ),
             history_preserved=history_preserved,
             error_message=error_message,
+            tool_records=tuple(self._current_turn_tool_records),
         )
         self._last_turn_outcome = outcome
         self._set_run_status(status)

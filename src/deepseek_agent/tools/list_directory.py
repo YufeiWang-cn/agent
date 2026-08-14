@@ -10,6 +10,8 @@ MAX_DIRECTORY_ENTRIES = 200
 class ListDirectoryTool(Tool):
     name = "list_directory"
     description = "列出工作目录内指定目录的直接子项，不递归访问。"
+    retryable = True
+    idempotent = True
     parameters: JsonObject = {
         "type": "object",
         "properties": {
