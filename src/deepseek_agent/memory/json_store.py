@@ -13,6 +13,11 @@ class JsonSessionStore:
         self._directory = directory
         self._directory.mkdir(parents=True, exist_ok=True)
 
+    @property
+    def directory(self) -> Path:
+        """返回当前会话文件所在的目录。"""
+        return self._directory
+
     def save(self, session: Session) -> None:
         path = self._path_for(session.id)
         temporary_path = path.with_suffix(".tmp")

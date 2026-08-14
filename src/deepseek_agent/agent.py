@@ -2,11 +2,17 @@ import logging
 import threading
 from pathlib import Path
 from typing import Callable
+from uuid import uuid4
 
 from .config import PROJECT_ROOT, Settings
 from .context import ContextManager
 from .conversation import Conversation, Message
-from .tool_execution import ToolExecutionRecord, ToolExecutor
+from .journal import RecoveryIssue, RunJournal, RunJournalError
+from .tool_execution import (
+    ToolExecutionRecord,
+    ToolExecutionStart,
+    ToolExecutor,
+)
 from .memory import (
     JsonProjectStore,
     JsonSessionStore,
@@ -20,13 +26,14 @@ from .observability import RuntimeMetrics
 from .permissions import ConsoleToolConfirmer, ToolConfirmer
 from .reliability import RetryPolicy, RetryingChatModel
 from .runtime import AgentEvent, RunStatus, TurnOutcome
-from .tools import ToolRegistry, build_default_registry
+from .tools import ToolEffect, ToolRegistry, build_default_registry
 
 
 EXIT_COMMANDS = {"/exit", "exit", "quit", "q", "退出"}
 MAX_AGENT_STEPS = 5
 DEFAULT_SESSION_DIRECTORY = PROJECT_ROOT / "data" / "sessions"
 DEFAULT_PROJECT_FILE = PROJECT_ROOT / "data" / "projects.json"
+DEFAULT_RUN_DIRECTORY = PROJECT_ROOT / "data" / "runs"
 
 
 class AgentCancelledError(RuntimeError):
@@ -70,7 +77,9 @@ class Agent:
         retry_policy: RetryPolicy | None = None,
         metrics: RuntimeMetrics | None = None,
         logger: logging.Logger | None = None,
+        run_journal: RunJournal | None = None,
     ) -> None:
+        self._logger = logger or logging.getLogger(__name__)
         base_model = model or DeepSeekModel(settings)
         self._metrics = metrics or RuntimeMetrics()
         self._model = RetryingChatModel(
@@ -95,6 +104,13 @@ class Agent:
         self._session_store = session_store or JsonSessionStore(
             Path(DEFAULT_SESSION_DIRECTORY)
         )
+        journal_directory = (
+            Path(DEFAULT_RUN_DIRECTORY)
+            if session_store is None
+            else self._session_store.directory / ".runs"
+        )
+        self._run_journal = run_journal or RunJournal(journal_directory)
+        self._recovery_issues = self._load_recovery_issues()
         self._project_store = project_store or JsonProjectStore(
             Path(DEFAULT_PROJECT_FILE)
         )
@@ -116,9 +132,12 @@ class Agent:
         self._run_status_lock = threading.Lock()
         self._run_status = RunStatus.IDLE
         self._current_turn_tool_records: list[ToolExecutionRecord] = []
+        self._current_turn_id: str | None = None
+        self._current_turn_side_effects_saved = False
 
     def run(self) -> None:
         self._print_welcome()
+        self._print_recovery_issues()
 
         while self._running:
             try:
@@ -191,10 +210,13 @@ class Agent:
         # 需要回滚时，只删除该位置之后新增的用户消息、助手消息和工具消息，旧会话历史不受影响。
         checkpoint = len(self._conversation)
         self._begin_turn()
+        self._current_turn_id = uuid4().hex
+        self._record_turn_started_safely(self._current_turn_id)
         # 每轮开始先清空上轮的结果，避免界面误用旧的“已保留”状态。
         self._last_turn_history_preserved = False
         self._last_turn_outcome = None
         self._current_turn_tool_records = []
+        self._current_turn_side_effects_saved = False
         self._conversation.add_user(prompt)
         steps_completed = 0
 
@@ -302,6 +324,8 @@ class Agent:
                 try:
                     # 已完成工具的记录必须成功落盘，否则本轮最终状态应改为失败。
                     self._save_session()
+                    self._current_turn_side_effects_saved = True
+                    self._record_turn_finished_safely(outcome)
                 except Exception as save_error:
                     self._finish_turn_outcome(
                         status=RunStatus.FAILED,
@@ -327,7 +351,7 @@ class Agent:
             else:
                 # 这里只回滚 Conversation，不会撤销文件系统或其他外部操作。
                 self._conversation.truncate(checkpoint)
-            self._finish_turn_outcome(
+            outcome = self._finish_turn_outcome(
                 status=RunStatus.FAILED,
                 final_text=self._latest_assistant_text(checkpoint),
                 steps_completed=steps_completed,
@@ -340,6 +364,8 @@ class Agent:
                 try:
                     # 已完成工具的记录必须成功落盘，否则保留失败状态并继续抛出保存异常。
                     self._save_session()
+                    self._current_turn_side_effects_saved = True
+                    self._record_turn_finished_safely(outcome)
                 except Exception as save_error:
                     self._finish_turn_outcome(
                         status=RunStatus.FAILED,
@@ -361,6 +387,10 @@ class Agent:
         on_event: AgentEventCallback | None = None,
         should_cancel: CancelCheck | None = None,
     ) -> list[ToolExecutionRecord]:
+        if self._current_turn_id is None:
+            # 私有方法的测试或扩展调用可能绕过 chat()，此时仍需建立可追踪的临时轮次。
+            self._current_turn_id = uuid4().hex
+            self._record_turn_started_safely(self._current_turn_id)
         records: list[ToolExecutionRecord] = []
         for request in requests:
             # 工具开始前需要检查停止信号。
@@ -375,7 +405,13 @@ class Agent:
                 on_tool_call(request)
             record = self._tool_executor.execute(
                 request,
-                on_confirmation_state=self._handle_confirmation_state,
+                on_confirmation_state=lambda waiting, current=request: (
+                    self._handle_confirmation_state_for_request(
+                        current,
+                        waiting,
+                    )
+                ),
+                before_execution=self._record_tool_started,
             )
             records.append(record)
             self._current_turn_tool_records.append(record)
@@ -386,6 +422,7 @@ class Agent:
                 name=record.tool_name,
                 content=record.model_result,
             )
+            self._record_tool_finished(record)
             self._emit_event(
                 on_event,
                 AgentEvent.tool_call_completed(request, record),
@@ -400,6 +437,55 @@ class Agent:
         self._set_run_status(
             RunStatus.WAITING_APPROVAL if waiting else RunStatus.RUNNING
         )
+
+    def _handle_confirmation_state_for_request(
+        self,
+        request: ToolCallRequest,
+        waiting: bool,
+    ) -> None:
+        """更新确认状态，并尽力记录确认请求已经出现。"""
+        self._handle_confirmation_state(waiting)
+        if not waiting or self._current_turn_id is None:
+            return
+        try:
+            self._run_journal.record_confirmation_requested(
+                self._current_turn_id,
+                request,
+            )
+        except RunJournalError as error:
+            self._logger.warning("无法记录工具确认请求：%s", error)
+
+    def _record_tool_started(self, start: ToolExecutionStart) -> None:
+        """在工具执行前记录开始事件，并保护可能产生副作用的操作。"""
+        if self._current_turn_id is None:
+            raise RunJournalError("当前工具调用缺少轮次标识。")
+        try:
+            self._run_journal.record_tool_started(
+                self._current_turn_id,
+                start,
+            )
+        except RunJournalError:
+            # 只读工具不会改变外部状态，因此日志失败时仍可安全执行。
+            if start.effect is ToolEffect.READ_ONLY:
+                self._logger.warning("只读工具开始事件未能写入运行日志。")
+                return
+            # 写入类工具必须先留下开始记录，否则崩溃后无法判断它是否已经执行。
+            raise
+
+    def _record_tool_finished(self, record: ToolExecutionRecord) -> None:
+        """记录工具结束事件，并对可能存在副作用的结果执行严格检查。"""
+        if self._current_turn_id is None:
+            raise RunJournalError("当前工具结果缺少轮次标识。")
+        try:
+            self._run_journal.record_tool_finished(
+                self._current_turn_id,
+                record,
+            )
+        except RunJournalError:
+            # 已经成功或可能成功的副作用必须拥有可靠的结束记录。
+            if record.may_have_side_effect:
+                raise
+            self._logger.warning("工具结束事件未能写入运行日志。")
 
     @staticmethod
     def _emit_event(
@@ -437,7 +523,46 @@ class Agent:
         )
         self._last_turn_outcome = outcome
         self._set_run_status(status)
+        if (
+            not any(
+                record.may_have_side_effect
+                for record in self._current_turn_tool_records
+            )
+            or self._current_turn_side_effects_saved
+        ):
+            self._record_turn_finished_safely(outcome)
         return outcome
+
+    def _record_turn_started_safely(self, turn_id: str) -> None:
+        """尽力记录轮次开始事件，且不因审计失败阻止纯文本对话。"""
+        try:
+            self._run_journal.record_turn_started(turn_id, self._session.id)
+        except RunJournalError as error:
+            self._logger.warning("无法记录轮次开始事件：%s", error)
+
+    def _record_turn_finished_safely(self, outcome: TurnOutcome) -> None:
+        """尽力记录轮次终止事件，且不覆盖原本的业务结果。"""
+        if self._current_turn_id is None:
+            return
+        try:
+            self._run_journal.record_turn_finished(
+                self._current_turn_id,
+                status=outcome.status.value,
+                steps_completed=outcome.steps_completed,
+                tool_calls_completed=outcome.tool_calls_completed,
+                history_preserved=outcome.history_preserved,
+                error_present=outcome.error_message is not None,
+            )
+        except RunJournalError as error:
+            self._logger.warning("无法记录轮次结束事件：%s", error)
+
+    def _load_recovery_issues(self) -> tuple[RecoveryIssue, ...]:
+        """读取上次运行留下的悬空工具调用，并在失败时允许程序启动。"""
+        try:
+            return self._run_journal.find_recovery_issues()
+        except RunJournalError as error:
+            self._logger.warning("无法扫描待恢复的工具调用：%s", error)
+            return ()
 
     def _begin_turn(self) -> None:
         """以原子方式开始新轮次，并拒绝同一实例上的并发调用。"""
@@ -531,6 +656,7 @@ class Agent:
         if has_tool_results:
             # 工具结果可能对应已经生效的外部副作用，因此保存失败必须向上抛出。
             self._save_session()
+            self._current_turn_side_effects_saved = True
             return
         # 纯文本回复没有外部副作用，因此沿用尽力保存以保证对话可继续使用。
         self._save_session_safely()
@@ -549,6 +675,11 @@ class Agent:
         """返回 Agent 当前轮次的实时运行状态。"""
         with self._run_status_lock:
             return self._run_status
+
+    @property
+    def recovery_issues(self) -> tuple[RecoveryIssue, ...]:
+        """返回启动时发现的结果未知工具调用。"""
+        return self._recovery_issues
 
     @property
     def model_name(self) -> str:
@@ -903,6 +1034,14 @@ class Agent:
             f"当前会话：{self._session.id[:8]}  {self._session.title}\n"
             "输入 /help 查看命令，输入 /exit 结束对话。"
         )
+
+    def _print_recovery_issues(self) -> None:
+        """在命令行启动时提醒用户检查结果未知的工具调用。"""
+        if not self._recovery_issues:
+            return
+        print("\n检测到上次运行存在结果未知的工具调用：")
+        for issue in self._recovery_issues:
+            print(f"- {issue.message}")
 
     @staticmethod
     def _print_help() -> None:

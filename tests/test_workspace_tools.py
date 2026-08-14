@@ -17,6 +17,7 @@ from src.deepseek_agent.tools import (
     build_default_registry,
 )
 from src.deepseek_agent.workspace import WorkspaceGuard
+from src.deepseek_agent.workspace.guard import DEFAULT_BLOCKED_PREFIXES
 
 
 class WorkspaceToolTests(unittest.TestCase):
@@ -33,6 +34,15 @@ class WorkspaceToolTests(unittest.TestCase):
         (self.workspace / ".git").mkdir()
         (self.workspace / "logs").mkdir()
         (self.workspace / "data" / "sessions").mkdir(parents=True)
+        (self.workspace / "data" / "runs").mkdir()
+        (self.workspace / "data" / "projects.json").write_text(
+            '{"version": 1}',
+            encoding="utf-8",
+        )
+        (self.workspace / "data" / "dataset.json").write_text(
+            '{"items": []}',
+            encoding="utf-8",
+        )
         self.outside_file = self.base / "outside.txt"
         self.outside_file.write_text("outside", encoding="utf-8")
 
@@ -57,7 +67,10 @@ class WorkspaceToolTests(unittest.TestCase):
         self.assertNotIn("logs", names)
 
         data_result = json.loads(self.list_tool.execute({"path": "data"}))
-        self.assertEqual(data_result["entries"], [])
+        self.assertEqual(
+            [entry["name"] for entry in data_result["entries"]],
+            ["dataset.json"],
+        )
 
     def test_read_text_file_returns_utf8_content(self) -> None:
         result = self.read_tool.execute({"path": "src/app.py"})
@@ -69,6 +82,8 @@ class WorkspaceToolTests(unittest.TestCase):
             ".git/config",
             "logs/agent.log",
             "data/sessions/session.json",
+            "data/runs/run.jsonl",
+            "data/projects.json",
             "../outside.txt",
             str(self.outside_file),
         ]
@@ -81,6 +96,49 @@ class WorkspaceToolTests(unittest.TestCase):
         absolute_inside_path = self.workspace / "src" / "app.py"
         with self.assertRaises(ToolExecutionError):
             self.read_tool.execute({"path": str(absolute_inside_path)})
+
+    def test_regular_data_files_remain_accessible(self) -> None:
+        content = self.read_tool.execute({"path": "data/dataset.json"})
+
+        self.assertEqual(content, '{"items": []}')
+
+    def test_internal_state_paths_reject_writes(self) -> None:
+        protected_paths = (
+            "data/runs/new-run.jsonl",
+            "data/projects.json",
+        )
+
+        for path in protected_paths:
+            with self.subTest(path=path):
+                with self.assertRaises(ToolExecutionError):
+                    self.write_tool.execute(
+                        {"path": path, "content": "should not be written"}
+                    )
+
+        self.assertFalse((self.workspace / "data" / "runs" / "new-run.jsonl").exists())
+        self.assertEqual(
+            (self.workspace / "data" / "projects.json").read_text(
+                encoding="utf-8"
+            ),
+            '{"version": 1}',
+        )
+
+    def test_gitignore_covers_every_internal_state_path(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        patterns = {
+            line.strip()
+            for line in (project_root / ".gitignore").read_text(
+                encoding="utf-8"
+            ).splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        expected_patterns = {
+            path.as_posix() if path.suffix else f"{path.as_posix()}/"
+            for path in DEFAULT_BLOCKED_PREFIXES
+        }
+
+        self.assertTrue(expected_patterns.issubset(patterns))
+        self.assertNotIn("data/", patterns)
 
     def test_symlink_cannot_escape_workspace(self) -> None:
         link = self.workspace / "outside-link.txt"

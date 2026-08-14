@@ -1,8 +1,10 @@
 from .agent import Agent, AgentCancelledError
 from .config import Settings
+from .journal import RecoveryIssue, RunJournal, RunJournalError
 from .runtime import AgentEvent, AgentEventType, RunStatus, TurnOutcome
 from .tool_execution import (
     ToolExecutionRecord,
+    ToolExecutionStart,
     ToolExecutionStatus,
     ToolExecutor,
 )
@@ -15,10 +17,14 @@ __all__ = [
     "AgentCancelledError",
     "AgentEvent",
     "AgentEventType",
+    "RecoveryIssue",
     "RunStatus",
+    "RunJournal",
+    "RunJournalError",
     "Settings",
     "ToolEffect",
     "ToolExecutionRecord",
+    "ToolExecutionStart",
     "ToolExecutionStatus",
     "ToolExecutor",
     "TurnOutcome",

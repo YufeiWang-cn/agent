@@ -1952,7 +1952,23 @@ class AgentApp:
         self._refresh_navigation()
         self._update_header()
         self._input.focus_set()
+        self._show_recovery_issues()
         self._root.after(50, self._drain_events)
+
+    def _show_recovery_issues(self) -> None:
+        """在界面完成初始化后提示用户核对上次未明确结束的工具。"""
+        # 界面仍兼容没有实现运行日志接口的自定义 Agent。
+        issues = getattr(self._agent, "recovery_issues", ())
+        if not issues:
+            return
+        details = "\n\n".join(issue.message for issue in issues[:5])
+        if len(issues) > 5:
+            details += f"\n\n另外还有 {len(issues) - 5} 条结果未知记录。"
+        messagebox.showwarning(
+            "需要检查上次运行",
+            details,
+            parent=self._root,
+        )
 
     def _configure_window(self) -> None:
         self._root.title("DeepSeek Agent")

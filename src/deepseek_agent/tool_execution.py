@@ -30,6 +30,21 @@ class ToolExecutionStatus(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class ToolExecutionStart:
+    """保存工具实际执行前需要持久化的身份和策略信息。"""
+
+    call_id: str
+    tool_name: str
+    raw_arguments: str
+    arguments: JsonObject
+    effect: ToolEffect
+    retryable: bool
+    idempotent: bool
+    supports_rollback: bool
+    timeout_seconds: float | None
+
+
+@dataclass(frozen=True, slots=True)
 class ToolExecutionRecord:
     """保存一次工具调用的参数、策略、结果和时间信息。"""
 
@@ -81,6 +96,7 @@ class ToolExecutionRecord:
 
 Clock = Callable[[], datetime]
 ConfirmationStateCallback = Callable[[bool], None]
+BeforeExecutionCallback = Callable[[ToolExecutionStart], None]
 
 
 class ToolExecutor:
@@ -102,6 +118,7 @@ class ToolExecutor:
         request: ToolCallRequest,
         *,
         on_confirmation_state: ConfirmationStateCallback | None = None,
+        before_execution: BeforeExecutionCallback | None = None,
     ) -> ToolExecutionRecord:
         """执行一次工具调用，并始终返回描述真实结果的结构化记录。"""
         started_at = self._clock()
@@ -139,6 +156,19 @@ class ToolExecutor:
                         execution_started=False,
                     )
 
+            start = ToolExecutionStart(
+                call_id=request.id,
+                tool_name=tool.name,
+                raw_arguments=request.arguments,
+                arguments=arguments,
+                effect=tool.effect,
+                retryable=tool.retryable,
+                idempotent=tool.idempotent,
+                supports_rollback=tool.supports_rollback,
+                timeout_seconds=tool.timeout_seconds,
+            )
+            if before_execution is not None:
+                before_execution(start)
             execution_started = True
             result = tool.execute(arguments)
             return self._record(
@@ -255,6 +285,7 @@ class ToolExecutor:
 
 __all__ = [
     "ToolExecutionRecord",
+    "ToolExecutionStart",
     "ToolExecutionStatus",
     "ToolExecutor",
 ]

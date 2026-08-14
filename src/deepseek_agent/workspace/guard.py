@@ -2,8 +2,16 @@ from pathlib import Path
 from uuid import uuid4
 
 
-DEFAULT_BLOCKED_NAMES = frozenset({".env", ".git", ".venv", "__pycache__"})  # 匹配任意一层的名称
-DEFAULT_BLOCKED_PREFIXES = (Path("data/sessions"), Path("logs"))  # 匹配从工作区根目录开始的路径前缀
+# 这些名称无论出现在工作区的哪一层，都属于禁止访问的敏感路径。
+DEFAULT_BLOCKED_NAMES = frozenset({".env", ".git", ".venv", "__pycache__"})
+
+# 这些路径从工作区根目录开始匹配，用于保护 Agent 自己维护的内部状态。
+DEFAULT_BLOCKED_PREFIXES = (
+    Path("data/sessions"),
+    Path("data/runs"),
+    Path("data/projects.json"),
+    Path("logs"),
+)
 
 
 class WorkspaceAccessError(RuntimeError):

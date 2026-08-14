@@ -191,5 +191,23 @@ class ToolExecutorTests(unittest.TestCase):
         self.assertEqual(record.status, ToolExecutionStatus.FAILED)
         self.assertFalse(record.may_have_side_effect)
 
+    def test_before_execution_failure_prevents_tool_from_running(self) -> None:
+        tool = ProtocolTool(effect=ToolEffect.IRREVERSIBLE_WRITE)
+        executor = ToolExecutor(ToolRegistry([tool]), StaticConfirmer(True))
+
+        record = executor.execute(
+            self.request(),
+            before_execution=lambda _start: (_ for _ in ()).throw(
+                OSError("journal unavailable")
+            ),
+        )
+
+        self.assertEqual(tool.executions, 0)
+        self.assertEqual(record.status, ToolExecutionStatus.FAILED)
+        self.assertFalse(record.execution_started)
+        self.assertFalse(record.may_have_side_effect)
+        self.assertIn("journal unavailable", record.model_result)
+
+
 if __name__ == "__main__":
     unittest.main()

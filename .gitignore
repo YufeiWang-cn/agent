@@ -7,5 +7,6 @@ __pycache__/
 build/
 dist/
 data/sessions/
+data/runs/
 data/projects.json
 logs/
