@@ -45,7 +45,7 @@ class AgentToolLoopTests(unittest.TestCase):
             store = JsonSessionStore(Path(directory))
             agent = Agent(settings, model=model, session_store=store)
 
-            agent._chat("128乘以37是多少？")
+            agent.chat("128乘以37是多少？")
 
             self.assertEqual(len(model.calls), 2)
             second_call_roles = [message["role"] for message in model.calls[1]]

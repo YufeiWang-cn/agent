@@ -14,16 +14,23 @@ class EntryPointTests(unittest.TestCase):
         settings = SimpleNamespace(log_level="INFO")
         logger = Mock()
         agent = Mock()
+        application = Mock()
 
         with (
             patch.object(cli.Settings, "from_env", return_value=settings),
             patch.object(cli, "build_file_logger", return_value=logger),
             patch.object(cli, "Agent", return_value=agent) as agent_class,
+            patch.object(
+                cli,
+                "CliApplication",
+                return_value=application,
+            ) as application_class,
         ):
             cli.main()
 
         agent_class.assert_called_once_with(settings, logger=logger)
-        agent.run.assert_called_once_with()
+        application_class.assert_called_once_with(agent)
+        application.run.assert_called_once_with()
 
     def test_gui_entry_point_builds_logger_and_starts_gui(self) -> None:
         settings = SimpleNamespace(log_level="DEBUG")

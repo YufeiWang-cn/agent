@@ -384,30 +384,6 @@ class AgentApiTests(unittest.TestCase):
         self.assertEqual(agent.session_id, session_id)
         self.assertEqual(agent.history(), history_before)
 
-    def test_cli_clear_uses_transactional_public_method(self) -> None:
-        model = CallbackModel([[TextDelta("回答")]])
-        agent = Agent(self.settings, model=model, session_store=self.store)
-        agent.chat("应保留的问题")
-        history_before = agent.history()
-
-        with patch.object(self.store, "save", side_effect=OSError("disk full")):
-            self.assertTrue(agent._handle_command("/clear"))
-
-        self.assertEqual(agent.history(), history_before)
-
-    def test_cli_new_does_not_switch_when_current_session_save_fails(self) -> None:
-        model = CallbackModel([[TextDelta("回答")]])
-        agent = Agent(self.settings, model=model, session_store=self.store)
-        agent.chat("原会话")
-        session_id = agent.session_id
-        history_before = agent.history()
-
-        with patch.object(self.store, "save", side_effect=OSError("disk full")):
-            self.assertTrue(agent._handle_command("/new"))
-
-        self.assertEqual(agent.session_id, session_id)
-        self.assertEqual(agent.history(), history_before)
-
     def test_public_session_methods_create_clear_and_load(self) -> None:
         model = CallbackModel([[TextDelta("回答")]])
         agent = Agent(self.settings, model=model, session_store=self.store)

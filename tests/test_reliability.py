@@ -1,7 +1,5 @@
-import io
 import tempfile
 import unittest
-from contextlib import redirect_stdout
 from pathlib import Path
 
 from _path_setup import add_src_to_path
@@ -175,40 +173,6 @@ class RetryingChatModelTests(unittest.TestCase):
                 for handler in list(logger.handlers):
                     handler.close()
                     logger.removeHandler(handler)
-
-    def test_stats_command_prints_runtime_metrics(self) -> None:
-        metrics = RuntimeMetrics(
-            model_requests=2,
-            api_attempts=3,
-            successful_requests=1,
-            failed_requests=1,
-            retries=1,
-            total_duration_seconds=4.0,
-        )
-        settings = Settings(
-            api_key="test",
-            base_url="https://example.invalid",
-            model="sequence-model",
-            system_prompt="system",
-        )
-        with tempfile.TemporaryDirectory() as directory:
-            agent = Agent(
-                settings,
-                model=SequenceModel([]),
-                session_store=JsonSessionStore(Path(directory)),
-                metrics=metrics,
-            )
-            output = io.StringIO()
-
-            with redirect_stdout(output):
-                handled = agent._handle_command("/stats")
-
-            self.assertTrue(handled)
-            self.assertIn("模型请求数：2", output.getvalue())
-            self.assertIn("API 尝试次数：3", output.getvalue())
-            self.assertIn("自动重试次数：1", output.getvalue())
-            self.assertIn("平均请求耗时：2.000 秒", output.getvalue())
-
 
 if __name__ == "__main__":
     unittest.main()

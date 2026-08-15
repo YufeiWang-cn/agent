@@ -114,7 +114,7 @@ class ContextManagerTests(unittest.TestCase):
             agent._conversation.add_user("旧问题" * 500)
             agent._conversation.add_assistant("旧回答" * 500)
 
-            agent._chat("新问题")
+            agent.chat("新问题")
 
             self.assertEqual(
                 [message["role"] for message in model.calls[0]],
