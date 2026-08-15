@@ -18,11 +18,11 @@ from deepseek_agent.ui.formatting import (
     _split_emoji_spans,
 )
 from deepseek_agent.ui.markdown import parse_inline, parse_markdown
+from deepseek_agent.ui.sidebar import _filter_sessions_by_title
 from deepseek_agent.ui.tk_app import (
     AgentApp,
     _coalesce_ui_events,
     _dequeue_ui_events,
-    _filter_sessions_by_title,
     _format_activity_status,
     _messages_after_last_user,
 )
