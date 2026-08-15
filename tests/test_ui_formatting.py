@@ -7,24 +7,25 @@ from _path_setup import add_src_to_path
 
 add_src_to_path()
 
+from deepseek_agent.config import Settings
+from deepseek_agent.memory import Session
+from deepseek_agent.ui.cards import MarkdownCodeCard, UserMessageCard
+from deepseek_agent.ui.formatting import (
+    _confirmation_content_previews,
+    _content_language_hint,
+    _conversation_preview,
+    _format_editor_content,
+    _split_emoji_spans,
+)
+from deepseek_agent.ui.markdown import parse_inline, parse_markdown
 from deepseek_agent.ui.tk_app import (
     AgentApp,
     _coalesce_ui_events,
-    _confirmation_content_previews,
-    _conversation_preview,
-    _content_language_hint,
     _dequeue_ui_events,
-    _format_activity_status,
     _filter_sessions_by_title,
-    _format_editor_content,
+    _format_activity_status,
     _messages_after_last_user,
-    _split_emoji_spans,
-    MarkdownCodeCard,
-    UserMessageCard,
 )
-from deepseek_agent.memory import Session
-from deepseek_agent.config import Settings
-from deepseek_agent.ui.markdown import parse_inline, parse_markdown
 
 
 class FakeUiAgent:
