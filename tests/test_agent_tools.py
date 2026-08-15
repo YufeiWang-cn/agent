@@ -2,15 +2,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from _path_setup import add_project_root_to_path
+from _path_setup import add_src_to_path
 
-add_project_root_to_path()
+add_src_to_path()
 
-from src.deepseek_agent.agent import Agent
-from src.deepseek_agent.config import Settings
-from src.deepseek_agent.conversation import Message
-from src.deepseek_agent.memory import JsonSessionStore
-from src.deepseek_agent.models import StreamEvent, TextDelta, ToolCallRequest
+from deepseek_agent.agent import Agent
+from deepseek_agent.config import Settings
+from deepseek_agent.conversation import Message
+from deepseek_agent.memory import JsonSessionStore
+from deepseek_agent.models import StreamEvent, TextDelta, ToolCallRequest
 
 
 class FakeToolModel:

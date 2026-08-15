@@ -3,11 +3,11 @@ import tkinter as tk
 import unittest
 from unittest.mock import patch
 
-from _path_setup import add_project_root_to_path
+from _path_setup import add_src_to_path
 
-add_project_root_to_path()
+add_src_to_path()
 
-from src.deepseek_agent.ui.tk_app import (
+from deepseek_agent.ui.tk_app import (
     AgentApp,
     _coalesce_ui_events,
     _confirmation_content_previews,
@@ -22,9 +22,9 @@ from src.deepseek_agent.ui.tk_app import (
     MarkdownCodeCard,
     UserMessageCard,
 )
-from src.deepseek_agent.memory import Session
-from src.deepseek_agent.config import Settings
-from src.deepseek_agent.ui.markdown import parse_inline, parse_markdown
+from deepseek_agent.memory import Session
+from deepseek_agent.config import Settings
+from deepseek_agent.ui.markdown import parse_inline, parse_markdown
 
 
 class FakeUiAgent:
@@ -315,7 +315,7 @@ class UiFormattingTests(unittest.TestCase):
         )
         try:
             with patch(
-                "src.deepseek_agent.ui.tk_app.Agent",
+                "deepseek_agent.ui.tk_app.Agent",
                 return_value=fake_agent,
             ):
                 app = AgentApp(root, settings)
@@ -366,7 +366,7 @@ class UiFormattingTests(unittest.TestCase):
         worker = WorkerState()
         try:
             with patch(
-                "src.deepseek_agent.ui.tk_app.Agent",
+                "deepseek_agent.ui.tk_app.Agent",
                 return_value=fake_agent,
             ):
                 app = AgentApp(root, settings)

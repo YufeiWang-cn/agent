@@ -3,11 +3,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from _path_setup import add_project_root_to_path
+from _path_setup import add_src_to_path
 
-add_project_root_to_path()
+add_src_to_path()
 
-from src.deepseek_agent import (
+from deepseek_agent import (
     Agent,
     AgentCancelledError,
     AgentEventType,
@@ -15,12 +15,12 @@ from src.deepseek_agent import (
     ToolEffect,
     ToolExecutionStatus,
 )
-from src.deepseek_agent.config import Settings
-from src.deepseek_agent.conversation import Message
-from src.deepseek_agent.memory import JsonProjectStore, JsonSessionStore
-from src.deepseek_agent.models import StreamEvent, TextDelta, ToolCallRequest
-from src.deepseek_agent.tools import ToolRegistry, WriteTextFileTool
-from src.deepseek_agent.workspace import WorkspaceGuard
+from deepseek_agent.config import Settings
+from deepseek_agent.conversation import Message
+from deepseek_agent.memory import JsonProjectStore, JsonSessionStore
+from deepseek_agent.models import StreamEvent, TextDelta, ToolCallRequest
+from deepseek_agent.tools import ToolRegistry, WriteTextFileTool
+from deepseek_agent.workspace import WorkspaceGuard
 
 
 class CallbackModel:

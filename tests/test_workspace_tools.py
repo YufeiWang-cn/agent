@@ -3,11 +3,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from _path_setup import add_project_root_to_path
+from _path_setup import add_src_to_path
 
-add_project_root_to_path()
+add_src_to_path()
 
-from src.deepseek_agent.tools import (
+from deepseek_agent.tools import (
     ListDirectoryTool,
     ReadTextFileTool,
     ReplaceTextTool,
@@ -16,8 +16,8 @@ from src.deepseek_agent.tools import (
     WriteTextFileTool,
     build_default_registry,
 )
-from src.deepseek_agent.workspace import WorkspaceGuard
-from src.deepseek_agent.workspace.guard import DEFAULT_BLOCKED_PREFIXES
+from deepseek_agent.workspace import WorkspaceGuard
+from deepseek_agent.workspace.guard import DEFAULT_BLOCKED_PREFIXES
 
 
 class WorkspaceToolTests(unittest.TestCase):

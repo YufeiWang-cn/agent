@@ -3,11 +3,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from _path_setup import add_project_root_to_path
+from _path_setup import add_src_to_path
 
-add_project_root_to_path()
+add_src_to_path()
 
-from src.deepseek_agent.memory import JsonSessionStore, Session, SessionStoreError
+from deepseek_agent.memory import JsonSessionStore, Session, SessionStoreError
 
 
 class JsonSessionStoreTests(unittest.TestCase):

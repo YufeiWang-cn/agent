@@ -4,16 +4,16 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from _path_setup import add_project_root_to_path
+from _path_setup import add_src_to_path
 
-add_project_root_to_path()
+add_src_to_path()
 
-from src.deepseek_agent.agent import Agent
-from src.deepseek_agent.config import Settings
-from src.deepseek_agent.memory import JsonSessionStore
-from src.deepseek_agent.models import TextDelta
-from src.deepseek_agent.observability import RuntimeMetrics, build_file_logger
-from src.deepseek_agent.reliability import (
+from deepseek_agent.agent import Agent
+from deepseek_agent.config import Settings
+from deepseek_agent.memory import JsonSessionStore
+from deepseek_agent.models import TextDelta
+from deepseek_agent.observability import RuntimeMetrics, build_file_logger
+from deepseek_agent.reliability import (
     ModelCallError,
     RetryableModelError,
     RetryPolicy,

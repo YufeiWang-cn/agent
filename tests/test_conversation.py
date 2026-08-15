@@ -1,10 +1,10 @@
 import unittest
 
-from _path_setup import add_project_root_to_path
+from _path_setup import add_src_to_path
 
-add_project_root_to_path()
+add_src_to_path()
 
-from src.deepseek_agent.conversation import Conversation
+from deepseek_agent.conversation import Conversation
 
 
 class ConversationTests(unittest.TestCase):

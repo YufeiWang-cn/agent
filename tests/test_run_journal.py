@@ -4,17 +4,17 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-from _path_setup import add_project_root_to_path
+from _path_setup import add_src_to_path
 
-add_project_root_to_path()
+add_src_to_path()
 
-from src.deepseek_agent.journal import RunJournal
-from src.deepseek_agent.tool_execution import (
+from deepseek_agent.journal import RunJournal
+from deepseek_agent.tool_execution import (
     ToolExecutionRecord,
     ToolExecutionStart,
     ToolExecutionStatus,
 )
-from src.deepseek_agent.tools import ToolEffect
+from deepseek_agent.tools import ToolEffect
 
 
 class RunJournalTests(unittest.TestCase):

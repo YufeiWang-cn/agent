@@ -3,17 +3,17 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from _path_setup import add_project_root_to_path
+from _path_setup import add_src_to_path
 
-add_project_root_to_path()
+add_src_to_path()
 
-from src.deepseek_agent.agent import Agent
-from src.deepseek_agent.config import Settings
-from src.deepseek_agent.memory import JsonSessionStore
-from src.deepseek_agent.models import ToolCallRequest
-from src.deepseek_agent.permissions import ConsoleToolConfirmer
-from src.deepseek_agent.tools import Tool, ToolRegistry
-from src.deepseek_agent.tools.base import JsonObject
+from deepseek_agent.agent import Agent
+from deepseek_agent.config import Settings
+from deepseek_agent.memory import JsonSessionStore
+from deepseek_agent.models import ToolCallRequest
+from deepseek_agent.permissions import ConsoleToolConfirmer
+from deepseek_agent.tools import Tool, ToolRegistry
+from deepseek_agent.tools.base import JsonObject
 
 
 class NoCallModel:

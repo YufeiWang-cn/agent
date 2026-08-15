@@ -1,16 +1,16 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from _path_setup import add_project_root_to_path
+from _path_setup import add_src_to_path
 
-add_project_root_to_path()
+add_src_to_path()
 
-from src.deepseek_agent.models import ToolCallRequest
-from src.deepseek_agent.tool_execution import (
+from deepseek_agent.models import ToolCallRequest
+from deepseek_agent.tool_execution import (
     ToolExecutionStatus,
     ToolExecutor,
 )
-from src.deepseek_agent.tools import (
+from deepseek_agent.tools import (
     JsonObject,
     Tool,
     ToolEffect,

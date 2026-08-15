@@ -51,6 +51,12 @@ python -m pip install -e .
 桌面可视化界面：
 
 ```bat
+deepseek-agent-gui
+```
+
+也可以在项目根目录使用兼容启动脚本：
+
+```bat
 python gui.py
 ```
 
@@ -59,6 +65,12 @@ python gui.py
 输入框中按 `Enter` 发送消息，按 `Shift+Enter` 换行。
 
 命令行界面：
+
+```bat
+deepseek-agent
+```
+
+也可以在项目根目录使用兼容启动脚本：
 
 ```bat
 python main.py

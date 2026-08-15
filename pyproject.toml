@@ -13,6 +13,10 @@ dependencies = [
     "python-dotenv>=1.0.0",
 ]
 
+[project.scripts]
+deepseek-agent = "deepseek_agent.cli:main"
+deepseek-agent-gui = "deepseek_agent.gui_app:main"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 include-package-data = true
