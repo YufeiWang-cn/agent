@@ -10,6 +10,10 @@ add_src_to_path()
 from deepseek_agent.config import Settings
 from deepseek_agent.memory import Session
 from deepseek_agent.ui.cards import MarkdownCodeCard, UserMessageCard
+from deepseek_agent.ui.conversation_view import (
+    ConversationView,
+    _messages_after_last_user,
+)
 from deepseek_agent.ui.formatting import (
     _confirmation_content_previews,
     _content_language_hint,
@@ -24,7 +28,6 @@ from deepseek_agent.ui.tk_app import (
     _coalesce_ui_events,
     _dequeue_ui_events,
     _format_activity_status,
-    _messages_after_last_user,
 )
 
 
@@ -156,25 +159,22 @@ class UiFormattingTests(unittest.TestCase):
             self.skipTest(f"Tk 不可用：{error}")
         root.withdraw()
         try:
-            app = AgentApp.__new__(AgentApp)
-            app._root = root
-            app._chat_view = tk.Text(root)
-            app._chat_view.insert("1.0", "Alpha beta alpha")
-            app._chat_view.tag_configure("search_match")
-            app._chat_view.tag_configure("search_current")
-            app._search_matches = []
-            app._search_match_index = -1
-            app._search_job = None
-            app._build_search_panel(root)
-            app._search_panel.place(x=0, y=0)
-            app._search_var.set("alpha")
+            view = ConversationView(
+                root,
+                on_prompt_suggestion=lambda _prompt: None,
+                focus_composer=lambda: None,
+            )
+            view.pack(fill="both", expand=True)
+            view.append("Alpha beta alpha", "assistant_body")
+            view.open_search()
+            view._search_var.set("alpha")
 
-            app._refresh_search_matches()
+            view._refresh_search_matches()
 
-            self.assertEqual(len(app._search_matches), 2)
-            self.assertEqual(app._search_status.get(), "1 / 2")
-            app._search_next()
-            self.assertEqual(app._search_status.get(), "2 / 2")
+            self.assertEqual(len(view._search_matches), 2)
+            self.assertEqual(view._search_status.get(), "1 / 2")
+            view.search_next()
+            self.assertEqual(view._search_status.get(), "2 / 2")
         finally:
             root.destroy()
 
@@ -185,55 +185,67 @@ class UiFormattingTests(unittest.TestCase):
             self.skipTest(f"Tk 不可用：{error}")
         root.withdraw()
         try:
-            app = AgentApp.__new__(AgentApp)
-            app._root = root
-            app._chat_view = tk.Text(root, width=60, height=10)
-            app._chat_view.pack()
-            app._chat_view.insert("1.0", "保留的旧消息\n")
-            app._live_response_mark = "live_response_start"
-            app._chat_view.mark_set(app._live_response_mark, "end-1c")
-            app._chat_view.mark_gravity(app._live_response_mark, "left")
-            app._chat_view.insert("end", "流式原始内容")
-            app._tool_card_widgets = []
-            app._tool_cards = {}
-            app._markdown_code_widgets = []
-            app._markdown_table_widgets = []
-            app._user_message_widgets = []
-            app._live_tool_start = 0
-            app._rendering_history = False
-            app._assistant_open = True
-            app._markdown_cache = {}
-            app._resize_job = None
-            app._pending_chat_width = 0
+            view = ConversationView(
+                root,
+                on_prompt_suggestion=lambda _prompt: None,
+                focus_composer=lambda: None,
+            )
+            view.pack(fill="both", expand=True)
+            view.append("保留的旧消息\n", "assistant_body")
+            view.begin_live_response()
+            view.append("流式原始内容", "assistant_body")
 
-            class FakeAgent:
-                @staticmethod
-                def history():
-                    return [
+            self.assertTrue(
+                view.render_completed_turn(
+                    [
                         {"role": "user", "content": "当前问题"},
                         {"role": "assistant", "content": "**最终答案**"},
                     ]
+                )
+            )
 
-            app._agent = FakeAgent()
-
-            self.assertTrue(app._render_completed_turn())
-
-            rendered = app._chat_view.get("1.0", "end-1c")
+            rendered = view.content()
             self.assertIn("保留的旧消息", rendered)
             self.assertIn("最终答案", rendered)
             self.assertNotIn("流式原始内容", rendered)
-            assistant_range = app._chat_view.tag_nextrange(
+            assistant_range = view._chat_view.tag_nextrange(
                 "assistant_header",
                 "1.0",
                 "end",
             )
             self.assertTrue(assistant_range)
             self.assertEqual(str(assistant_range[0]).split(".")[0], "2")
-            self.assertNotIn(app._live_response_mark, app._chat_view.mark_names())
+            self.assertNotIn(
+                view._live_response_mark,
+                view._chat_view.mark_names(),
+            )
         finally:
             root.destroy()
 
-    def test_empty_state_suggestion_populates_the_composer(self) -> None:
+    def test_empty_state_suggestion_notifies_the_composer(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk 不可用：{error}")
+        root.withdraw()
+        try:
+            prompts: list[str] = []
+            view = ConversationView(
+                root,
+                on_prompt_suggestion=prompts.append,
+                focus_composer=lambda: None,
+            )
+            view.pack(fill="both", expand=True)
+
+            view._show_empty_state()
+            view._use_prompt_suggestion("请分析项目结构。")
+
+            self.assertIsNotNone(view._empty_state_frame)
+            self.assertEqual(prompts, ["请分析项目结构。"])
+        finally:
+            root.destroy()
+
+    def test_prompt_suggestion_populates_the_composer(self) -> None:
         try:
             root = tk.Tk()
         except tk.TclError as error:
@@ -241,16 +253,11 @@ class UiFormattingTests(unittest.TestCase):
         root.withdraw()
         try:
             app = AgentApp.__new__(AgentApp)
-            app._root = root
             app._busy = False
-            app._chat_view = tk.Text(root, width=60, height=12)
             app._input = tk.Text(root, width=40, height=2)
-            app._empty_state_frame = None
 
-            app._show_empty_state()
             app._use_prompt_suggestion("请分析项目结构。")
 
-            self.assertIsNotNone(app._empty_state_frame)
             self.assertEqual(
                 app._input.get("1.0", "end-1c"),
                 "请分析项目结构。",
@@ -321,9 +328,9 @@ class UiFormattingTests(unittest.TestCase):
             ):
                 app = AgentApp(root, settings)
             app._active_prompt = "请重试这个问题"
-            app._register_turn(app._active_prompt, select=True)
-            app._append_message("您", app._active_prompt, "user")
-            app._begin_live_response()
+            app._conversation.register_turn(app._active_prompt, select=True)
+            app._conversation.append_message("您", app._active_prompt, "user")
+            app._conversation.begin_live_response()
             app._handle_event("text", "部分回答")
 
             app._handle_event(
@@ -331,10 +338,10 @@ class UiFormattingTests(unittest.TestCase):
                 ("本轮对话已停止。", False),
             )
 
-            self.assertEqual(len(app._turn_marks), 0)
+            self.assertEqual(app._conversation.turn_count, 0)
             self.assertNotIn(
                 "部分回答",
-                app._chat_view.get("1.0", "end-1c"),
+                app._conversation.content(),
             )
             self.assertEqual(
                 app._input.get("1.0", "end-1c"),
