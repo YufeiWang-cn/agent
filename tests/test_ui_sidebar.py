@@ -1,3 +1,5 @@
+"""验证项目与会话侧边栏的交互状态。"""
+
 import tkinter as tk
 import unittest
 from unittest.mock import patch

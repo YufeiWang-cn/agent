@@ -1,3 +1,5 @@
+"""验证运行日志记录、参数脱敏和崩溃恢复扫描。"""
+
 import json
 import tempfile
 import unittest

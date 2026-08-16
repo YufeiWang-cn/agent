@@ -1,3 +1,5 @@
+"""定义 Agent 向 CLI、GUI 或其他调用方发送的统一运行事件。"""
+
 from dataclasses import dataclass
 from enum import Enum
 

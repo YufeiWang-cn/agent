@@ -1,3 +1,5 @@
+"""验证界面格式化、Markdown 渲染和布局计算。"""
+
 import queue
 import tkinter as tk
 import unittest

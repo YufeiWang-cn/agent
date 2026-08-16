@@ -1,3 +1,5 @@
+"""验证 Agent 与工具模型之间的完整调用循环。"""
+
 import tempfile
 import unittest
 from pathlib import Path

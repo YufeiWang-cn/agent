@@ -1,3 +1,5 @@
+"""定义 Agent 实时运行状态和单轮结束后的结构化结果。"""
+
 from dataclasses import dataclass
 from enum import Enum
 

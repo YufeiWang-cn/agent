@@ -1,3 +1,5 @@
+"""将不同的 SDK 异常统一归类为稳定的模型错误类型。"""
+
 from openai import (
     APIConnectionError,
     APIStatusError,
@@ -10,14 +12,16 @@ from openai import (
 
 
 class RetryableModelError(RuntimeError):
-    """A transient model error used by adapters and tests."""
+    """表示适配器或测试主动声明的临时模型错误。"""
 
 
 class ModelCallError(RuntimeError):
+    """向上层报告归类后的模型调用错误及其是否可重试。"""
+
     def __init__(
         self,
         message: str,
-        *,  # 星号表示后面的参数必须使用关键字传递
+        *,
         category: str,
         retryable: bool,
         partial: bool,
@@ -29,6 +33,7 @@ class ModelCallError(RuntimeError):
 
 
 def classify_model_error(error: Exception) -> tuple[str, bool, str]:
+    """返回错误类别、是否可重试和适合展示给用户的消息。"""
     if isinstance(error, RetryableModelError):
         return "temporary", True, "模型服务暂时不可用"
     if isinstance(error, APITimeoutError):

@@ -1,3 +1,5 @@
+"""创建或完整覆盖安全工作区内的 UTF-8 文本文件。"""
+
 import json
 
 from ..workspace import WorkspaceAccessError, WorkspaceGuard
@@ -5,6 +7,8 @@ from .base import JsonObject, Tool, ToolEffect, ToolExecutionError
 
 
 class WriteTextFileTool(Tool):
+    """在用户确认后执行不可逆覆盖，并返回结构化写入摘要。"""
+
     name = "write_text_file"
     description = "在工作目录内创建或完整覆盖一个 UTF-8 文本文件。"
     requires_confirmation = True

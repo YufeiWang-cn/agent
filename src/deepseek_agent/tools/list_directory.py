@@ -1,3 +1,5 @@
+"""列出安全工作区内目录的直接子项。"""
+
 import json
 
 from ..workspace import WorkspaceAccessError, WorkspaceGuard
@@ -8,6 +10,8 @@ MAX_DIRECTORY_ENTRIES = 200
 
 
 class ListDirectoryTool(Tool):
+    """返回经过安全过滤和数量限制的目录条目。"""
+
     name = "list_directory"
     description = "列出工作目录内指定目录的直接子项，不递归访问。"
     retryable = True

@@ -1,3 +1,5 @@
+"""验证文本搜索和精确替换工具的安全边界。"""
+
 import json
 import tempfile
 import unittest

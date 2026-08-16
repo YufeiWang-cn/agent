@@ -1,3 +1,5 @@
+"""注册工具，并负责工具名称查找和基础参数解析。"""
+
 import json
 from collections.abc import Iterable
 
@@ -5,7 +7,7 @@ from .base import JsonObject, Tool, ToolExecutionError, ToolNotFoundError
 
 
 class ToolRegistry:
-    """Register tools, expose model schemas, and dispatch tool calls."""
+    """集中管理工具实例、提供给模型的工具结构和调用分发。"""
 
     def __init__(self, tools: Iterable[Tool] | None = None) -> None:
         self._tools: dict[str, Tool] = {}

@@ -1,3 +1,5 @@
+"""按完整对话轮次裁剪上下文，避免破坏工具调用消息链。"""
+
 from copy import deepcopy
 from dataclasses import dataclass
 
@@ -7,6 +9,8 @@ from .estimator import estimate_messages_tokens
 
 @dataclass(frozen=True, slots=True)
 class ContextWindow:
+    """描述实际发送给模型的上下文及其裁剪统计。"""
+
     messages: list[Message]
     estimated_tokens: int
     total_estimated_tokens: int
@@ -18,6 +22,8 @@ class ContextWindow:
 
 
 class ContextManager:
+    """在 Token 预算内保留系统消息，并尽量保留最近的完整对话轮次。"""
+
     def __init__(self, max_tokens: int) -> None:
         if max_tokens <= 0:
             raise ValueError("max_tokens 必须大于 0")
@@ -28,6 +34,7 @@ class ContextManager:
         return self._max_tokens
 
     def prepare(self, messages: list[Message]) -> ContextWindow:
+        """生成上下文快照，并始终保留可能超出预算的最新轮次。"""
         if not messages:
             return ContextWindow([], 0, 0, 0)
 

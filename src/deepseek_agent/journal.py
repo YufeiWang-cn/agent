@@ -1,3 +1,5 @@
+"""使用不记录敏感正文的 JSONL 日志保存关键事件并检测崩溃残留。"""
+
 import hashlib
 import json
 import os
@@ -58,7 +60,7 @@ Clock = Callable[[], datetime]
 
 
 class RunJournal:
-    """使用只追加 JSONL 文件保存 Agent 的关键执行事件。"""
+    """使用仅追加的 JSONL 文件保存关键事件，并识别未闭合的工具调用。"""
 
     def __init__(
         self,
@@ -175,7 +177,7 @@ class RunJournal:
         )
 
     def find_recovery_issues(self) -> tuple[RecoveryIssue, ...]:
-        """扫描日志并返回没有被已保存轮次闭合的副作用工具调用。"""
+        """扫描日志并返回所属轮次尚未完成保存的副作用工具调用。"""
         pending: dict[tuple[str, str, str], dict[str, Any]] = {}
         try:
             paths = sorted(self._directory.glob("*.jsonl"))
@@ -293,7 +295,7 @@ def _summarize_arguments(
 
 
 def _tool_event_key(event: dict[str, Any]) -> tuple[str, str, str] | None:
-    """返回用于匹配工具开始与结束事件的稳定键。"""
+    """返回用于关联工具开始与结束事件的稳定标识。"""
     if event.get("event") not in {"tool_started", "tool_finished"}:
         return None
     values = (

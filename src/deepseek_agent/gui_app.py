@@ -1,3 +1,5 @@
+"""加载配置、日志记录器和 Tk 主界面，作为桌面应用入口。"""
+
 from .config import PROJECT_ROOT, Settings
 from .observability import build_file_logger
 from .ui import run_gui

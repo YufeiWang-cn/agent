@@ -1,18 +1,23 @@
+"""维护发送给模型的完整消息历史和工具调用消息链。"""
+
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
 
-# 定义一个类型别名。加入工具调用后，消息中除了字符串还会包含 tool_calls 列表。
+# 消息字段除了字符串，还可能包含 ``tool_calls`` 列表，因此使用统一的类型别名。
 Message = dict[str, Any]
 
 
 @dataclass(slots=True)
 class Conversation:
-    system_prompt: str
-    messages: list[Message] = field(init=False)  # init=False：messages由类内部初始化
+    """封装对话消息的创建、恢复和失败轮次回滚操作。"""
 
-    # dataclass 完成 __init__ 后自动调用，用于建立初始系统消息。
+    system_prompt: str
+    # 消息列表始终由类内部根据系统提示词初始化。
+    messages: list[Message] = field(init=False)
+
+    # 数据类完成 ``__init__`` 后会自动调用此方法，用于建立初始系统消息。
     def __post_init__(self) -> None:
         self.clear()
 
@@ -23,8 +28,7 @@ class Conversation:
         if not messages or messages[0].get("role") != "system":
             raise ValueError("会话记录缺少 system 消息")
         self.messages = deepcopy(messages)
-        # 使用当前项目中的系统提示词，避免恢复已经过期的提示词。
-        # 旧会话恢复后也会使用最新提示词，而不是永久沿用旧版本。
+        # 恢复旧会话时仍使用当前系统提示词，避免永久沿用过期版本。
         self.messages[0] = {"role": "system", "content": self.system_prompt}
 
     def __len__(self) -> int:

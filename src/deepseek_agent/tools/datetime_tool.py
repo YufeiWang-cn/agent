@@ -1,3 +1,5 @@
+"""提供支持 IANA 时区名称的当前日期时间工具。"""
+
 import json
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -9,6 +11,8 @@ WEEKDAYS = ("星期一", "星期二", "星期三", "星期四", "星期五", "�
 
 
 class DateTimeTool(Tool):
+    """返回指定时区的 ISO 格式时间和中文星期。"""
+
     name = "get_current_time"
     description = "获取指定 IANA 时区的当前日期、时间和星期。"
     retryable = True

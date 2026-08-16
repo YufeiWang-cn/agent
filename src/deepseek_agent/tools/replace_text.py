@@ -1,3 +1,5 @@
+"""对安全工作区内的文本文件执行唯一匹配替换。"""
+
 import json
 
 from ..workspace import WorkspaceAccessError, WorkspaceGuard
@@ -5,6 +7,8 @@ from .base import JsonObject, Tool, ToolEffect, ToolExecutionError
 
 
 class ReplaceTextTool(Tool):
+    """只在原文本恰好出现一次时执行替换，防止误改多处内容。"""
+
     name = "replace_text"
     description = "在工作目录内的 UTF-8 文本文件中精确替换唯一一处文本。"
     requires_confirmation = True

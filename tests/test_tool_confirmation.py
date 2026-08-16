@@ -1,3 +1,5 @@
+"""验证工具确认策略和命令行交互行为。"""
+
 import tempfile
 import unittest
 from pathlib import Path

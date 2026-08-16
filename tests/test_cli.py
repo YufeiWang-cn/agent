@@ -1,3 +1,5 @@
+"""验证命令行命令分发和失败状态处理。"""
+
 import io
 import tempfile
 import unittest

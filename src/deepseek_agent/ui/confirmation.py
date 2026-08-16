@@ -1,4 +1,4 @@
-"""Thread-safe tool confirmation bridge and dialog."""
+"""在线程安全的桥接层与对话框之间传递工具确认请求。"""
 
 import queue
 import threading
@@ -16,6 +16,8 @@ from .theme import APP_BACKGROUND, EDITOR_BACKGROUND, EDITOR_BORDER
 
 @dataclass(slots=True)
 class ConfirmationRequest:
+    """保存工作线程与 Tk 主线程之间共享的确认状态。"""
+
     tool: Tool
     arguments: str
     completed: threading.Event
@@ -23,6 +25,8 @@ class ConfirmationRequest:
 
 
 class TkToolConfirmer:
+    """把工作线程中的同步确认请求转发到 Tk 事件队列。"""
+
     def __init__(
         self,
         event_queue: queue.Queue[tuple[str, Any]],
@@ -41,6 +45,8 @@ class TkToolConfirmer:
 
 
 class ToolConfirmationDialog:
+    """展示工具说明和完整参数，并按需提供内容预览。"""
+
     def __init__(self, parent: tk.Tk, request: ConfirmationRequest) -> None:
         self.allowed = False
         self._window = tk.Toplevel(parent)

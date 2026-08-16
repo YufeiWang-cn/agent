@@ -1,4 +1,4 @@
-"""Conversation, Markdown, and tool detail widgets."""
+"""实现对话消息、Markdown 内容和工具详情卡片。"""
 
 import tkinter as tk
 import tkinter.font as tkfont
@@ -33,6 +33,8 @@ from .theme import (
 
 
 class RenderedMarkdownPreview(tk.Frame):
+    """在只读文本控件中渲染 Markdown 预览。"""
+
     def __init__(self, parent: tk.Misc, content: str) -> None:
         super().__init__(parent, background=EDITOR_BACKGROUND)
         self._table_cards: list[MarkdownTableCard] = []
@@ -165,6 +167,8 @@ class RenderedMarkdownPreview(tk.Frame):
 
 
 class MarkdownCodeCard:
+    """展示带语言标签和复制功能的自适应代码块。"""
+
     def __init__(
         self,
         parent: tk.Text,
@@ -184,8 +188,8 @@ class MarkdownCodeCard:
 
         self.frame = tk.Frame(
             parent,
-            # 用外层背景形成稳定的 1px 边框，避免 highlightthickness 在
-            # Windows DPI 缩放下挤占内容区域或覆盖最后一行。
+            # 使用外层背景形成稳定的 1px 边框。
+            # 这种方式避免 Windows DPI 缩放挤占内容区域或覆盖最后一行。
             background=EDITOR_BORDER,
             highlightthickness=0,
             borderwidth=0,
@@ -301,10 +305,10 @@ class MarkdownCodeCard:
         border_height = 2
         toolbar_and_separator_height = 41
         text = self._editor.text
-        # dlineinfo 只保证返回可见行的信息；代码块位于视口外或父容器尚未
-        # 完成布局时，它会返回 None，旧逻辑因此会得到不稳定的高度。
-        # Text.count(..., "ypixels") 会计算所有显示行的真实像素高度，且会
-        # 纳入行内不同字体的度量，再显式补上上下 padding 即可得到完整高度。
+        # dlineinfo 只保证返回可见行的信息。
+        # 代码块位于视口外或布局未完成时会返回 None，导致高度不稳定。
+        # Text.count(..., "ypixels") 会计算所有显示行的真实像素高度。
+        # 该结果包含行内字体度量，补上上下内边距即可得到完整高度。
         pixel_count = text.count("1.0", "end", "ypixels")
         content_height = pixel_count[0] if pixel_count else 0
         line_height = tkfont.Font(font=text.cget("font")).metrics("linespace")
@@ -344,6 +348,8 @@ class MarkdownCodeCard:
 
 
 class MarkdownTableCard:
+    """使用网格布局展示可自适应宽度的 Markdown 表格。"""
+
     def __init__(
         self,
         parent: tk.Text,
@@ -532,7 +538,7 @@ class MarkdownTableCard:
 
 
 class UserMessageCard:
-    """A content-sized, right-aligned user message bubble."""
+    """展示根据内容确定宽度并右对齐的用户消息气泡。"""
 
     def __init__(self, parent: tk.Text, author: str, content: str) -> None:
         self._chat_view = parent
@@ -684,7 +690,7 @@ class UserMessageCard:
 
 
 class ConversationRail:
-    """Compact side navigation for conversation turns."""
+    """提供按对话轮次跳转的紧凑侧边导航。"""
 
     def __init__(
         self,
@@ -874,6 +880,8 @@ class ConversationRail:
 
 
 class FullscreenToolViewer:
+    """在独立窗口中展示较长的工具参数和结果。"""
+
     def __init__(
         self,
         parent: tk.Misc,
@@ -1040,6 +1048,8 @@ class FullscreenToolViewer:
 
 
 class ToolCallCard:
+    """展示工具调用状态，并支持查看完整参数和执行结果。"""
+
     def __init__(self, parent: tk.Text, name: str, arguments: str) -> None:
         self._chat_view = parent
         self._name = name

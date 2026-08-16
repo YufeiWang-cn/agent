@@ -1,3 +1,5 @@
+"""定义不可变的项目实体和项目名称校验规则。"""
+
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -10,6 +12,8 @@ def _now() -> str:
 
 @dataclass(frozen=True, slots=True)
 class Project:
+    """表示用于归类会话的轻量级项目。"""
+
     id: str
     name: str
     created_at: str

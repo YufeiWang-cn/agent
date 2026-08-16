@@ -1,3 +1,5 @@
+"""统一管理工具调用的解析、确认、执行和结果记录生命周期。"""
+
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -100,7 +102,7 @@ BeforeExecutionCallback = Callable[[ToolExecutionStart], None]
 
 
 class ToolExecutor:
-    """统一解析、确认并执行模型请求的工具调用。"""
+    """统一解析、确认并执行工具，确保每次调用都有结构化结果记录。"""
 
     def __init__(
         self,
@@ -120,7 +122,7 @@ class ToolExecutor:
         on_confirmation_state: ConfirmationStateCallback | None = None,
         before_execution: BeforeExecutionCallback | None = None,
     ) -> ToolExecutionRecord:
-        """执行一次工具调用，并始终返回描述真实结果的结构化记录。"""
+        """执行一次工具调用，并始终以结构化记录返回实际结果。"""
         started_at = self._clock()
         tool: Tool | None = None
         arguments: JsonObject | None = None

@@ -1,4 +1,4 @@
-"""Shared colors and fonts for the Tk desktop interface."""
+"""集中定义 Tk 桌面界面共用的颜色和字体。"""
 
 APP_BACKGROUND = "#F1F5F9"
 SIDEBAR_BACKGROUND = "#F7F7F8"

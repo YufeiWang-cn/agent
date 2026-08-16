@@ -1,3 +1,5 @@
+"""实现 Agent 的交互式命令行界面和会话管理命令。"""
+
 from .agent import Agent
 from .config import PROJECT_ROOT, Settings
 from .conversation import Message

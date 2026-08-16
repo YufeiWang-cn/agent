@@ -1,3 +1,5 @@
+"""导出工具公共接口，并组装 Agent 的默认工具集合。"""
+
 from pathlib import Path
 
 from ..workspace import WorkspaceGuard
@@ -23,6 +25,7 @@ def build_default_registry(
     workspace_root: Path | None = None,
     max_file_size: int = 100_000,
 ) -> ToolRegistry:
+    """使用同一个工作区守卫构建默认工具注册表。"""
     guard = WorkspaceGuard(workspace_root or Path.cwd(), max_file_size)
     return ToolRegistry(
         [

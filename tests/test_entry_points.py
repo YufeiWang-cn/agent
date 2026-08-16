@@ -1,3 +1,5 @@
+"""验证命令行和桌面入口能够正确完成依赖组装。"""
+
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch

@@ -1,3 +1,5 @@
+"""验证工具从参数解析到结果记录的完整生命周期。"""
+
 import unittest
 from datetime import datetime, timedelta, timezone
 

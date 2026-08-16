@@ -1,4 +1,4 @@
-"""Reusable syntax-aware text and tabbed editor widgets."""
+"""实现可复用的语法高亮文本框和多标签内容查看器。"""
 
 import io
 import keyword
@@ -20,6 +20,8 @@ from .theme import (
 
 
 class SyntaxText(tk.Frame):
+    """展示只读文本，并按内容类型应用轻量级语法高亮。"""
+
     def __init__(
         self,
         parent: tk.Misc,
@@ -133,8 +135,8 @@ class SyntaxText(tk.Frame):
 
     def _set_horizontal_scrollbar(self, visible: bool) -> None:
         if visible:
-            # winfo_ismapped() 还取决于祖先窗口当前是否可见；代码块位于
-            # 聊天视口外时会返回 False。这里关心的是滚动条是否参与布局。
+            # winfo_ismapped() 还取决于祖先窗口当前是否可见。
+            # 此处只关心滚动条是否参与布局，因此检查 grid_info()。
             if not self._scroll_x.grid_info():
                 self._scroll_x.grid()
         else:
@@ -237,6 +239,8 @@ class SyntaxText(tk.Frame):
 
 
 class EditorTabs(tk.Frame):
+    """在多个只读文本或自定义预览组件之间切换。"""
+
     def __init__(
         self,
         parent: tk.Misc,

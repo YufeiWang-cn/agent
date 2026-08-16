@@ -1,3 +1,5 @@
+"""导出应用调用方最常使用的 Agent、事件和执行结果接口。"""
+
 from .agent import Agent, AgentCancelledError
 from .config import Settings
 from .journal import RecoveryIssue, RunJournal, RunJournalError

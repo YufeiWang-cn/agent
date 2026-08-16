@@ -1,3 +1,5 @@
+"""构建 Tk 桌面应用，并协调后台 Agent 线程和主线程界面事件。"""
+
 import logging
 import queue
 import threading
@@ -36,6 +38,7 @@ from .theme import (
 def _coalesce_ui_events(
     events: list[tuple[str, Any]],
 ) -> list[tuple[str, Any]]:
+    """合并相邻文本事件，降低流式输出对 Tk 布局的刷新压力。"""
     combined: list[tuple[str, Any]] = []
     for event_name, payload in events:
         if event_name == "text" and combined and combined[-1][0] == "text":
@@ -53,7 +56,7 @@ def _dequeue_ui_events(
     event_queue: queue.Queue[tuple[str, Any]],
     limit: int = 256,
 ) -> list[tuple[str, Any]]:
-    """Take a bounded batch so a fast stream cannot starve Tk's event loop."""
+    """每次按数量上限取出一批事件，防止快速流式输出阻塞 Tk 事件循环。"""
     events: list[tuple[str, Any]] = []
     for _index in range(max(1, limit)):
         try:
@@ -71,6 +74,8 @@ def _format_activity_status(phase: str, elapsed: float, characters: int) -> str:
 
 
 class AgentApp:
+    """管理桌面应用布局、后台任务、流式事件和安全关闭流程。"""
+
     def __init__(
         self,
         root: tk.Tk,
@@ -644,8 +649,8 @@ class AgentApp:
                 if not self._closed:
                     self._schedule_event_drain(50)
             return
-        # 流式输出期间提高刷新频率；单次批量有上限，避免大量 token 或工具
-        # 事件占满主线程，确保滚动、停止按钮和窗口拖动仍能及时响应。
+        # 流式输出期间提高事件刷新频率。
+        # 批量上限可避免事件占满主线程，确保界面操作仍能及时响应。
         next_delay = 8 if not self._events.empty() else 20 if self._busy else 50
         self._schedule_event_drain(next_delay)
 
@@ -1005,6 +1010,7 @@ def run_gui(
     settings: Settings,
     logger: logging.Logger | None = None,
 ) -> None:
+    """创建 Tk 根窗口并运行桌面应用主循环。"""
     root = tk.Tk()
     AgentApp(root, settings, logger=logger)
     root.mainloop()

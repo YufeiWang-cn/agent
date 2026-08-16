@@ -1,3 +1,5 @@
+"""通过 OpenAI 兼容接口将 DeepSeek 流式响应转换为内部事件。"""
+
 from collections.abc import Iterable, Sequence
 from typing import Any
 
@@ -15,8 +17,9 @@ DEEPSEEK_MODELS = (
 
 
 class DeepSeekModel:
+    """封装 DeepSeek 客户端、模型切换和流式工具调用片段拼接。"""
+
     def __init__(self, settings: Settings) -> None:
-        # 属性名前面的_表示内部实现，不建议外部直接访问
         self._model_name = settings.model
         self._client = OpenAI(
             api_key=settings.api_key,
@@ -56,6 +59,7 @@ class DeepSeekModel:
             request["tools"] = list(tools)
 
         response = self._client.chat.completions.create(**request)
+        # SDK 会把同一个工具调用拆成多个增量，因此需要按索引重新拼接。
         pending_tool_calls: dict[int, dict[str, str]] = {}
 
         for chunk in response:

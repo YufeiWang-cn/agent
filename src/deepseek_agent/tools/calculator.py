@@ -1,3 +1,5 @@
+"""提供不执行任意 Python 代码的受限数学表达式计算工具。"""
+
 import ast
 import math
 import operator
@@ -27,6 +29,8 @@ UNARY_OPERATORS: dict[type[ast.unaryop], Callable[[Number], Number]] = {
 
 
 class CalculatorTool(Tool):
+    """只解析允许的抽象语法树节点，并限制指数和结果范围。"""
+
     name = "calculator"
     description = "安全计算数学表达式，支持加减乘除、整除、取余、乘方和括号。"
     retryable = True

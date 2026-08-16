@@ -1,3 +1,5 @@
+"""读取、校验并集中保存 Agent 的运行配置。"""
+
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,11 +19,7 @@ DEFAULT_MAX_FILE_SIZE = 100_000
 
 @dataclass(frozen=True, slots=True)
 class Settings:
-    '''
-    @dataclass(frozen=True, slots=True)将Settings类变成数据类\n
-    frozen=True：创建后不允许修改配置，防止运行过程中误改Key或模型\n
-    slots=True：限制对象只能包含定义过的属性，并减少少量内存使用
-    '''
+    """保存已经校验的不可变配置，避免运行期间意外修改关键参数。"""
     api_key: str
     base_url: str
     model: str
@@ -36,6 +34,7 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
+        """从项目的 ``.env`` 和环境变量加载配置，并验证取值范围。"""
         load_dotenv(PROJECT_ROOT / ".env")
 
         api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()

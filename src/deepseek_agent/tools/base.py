@@ -1,3 +1,5 @@
+"""定义工具协议、影响等级和统一异常类型。"""
+
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any
@@ -7,15 +9,15 @@ JsonObject = dict[str, Any]
 
 
 class ToolError(Exception):
-    """Base exception for tool registration and execution errors."""
+    """作为所有工具注册和执行错误的基类。"""
 
 
 class ToolNotFoundError(ToolError):
-    """Raised when the model requests an unknown tool."""
+    """表示模型请求了尚未注册的工具。"""
 
 
 class ToolExecutionError(ToolError):
-    """表示工具参数无效或工具以可预期方式执行失败。"""
+    """表示工具参数无效或发生了可预期的执行失败。"""
 
     def __init__(
         self,
@@ -37,7 +39,7 @@ class ToolEffect(str, Enum):
 
 
 class Tool(ABC):
-    """Common contract implemented by every Agent tool."""
+    """定义所有 Agent 工具必须实现的统一接口和安全属性。"""
 
     name: str
     description: str
@@ -51,9 +53,7 @@ class Tool(ABC):
 
     @property
     def schema(self) -> JsonObject:
-        """
-        把工具转换成 DeepSeek/OpenAI Function Calling 所需的格式
-        """
+        """把工具转换成 DeepSeek/OpenAI 函数调用所需的结构。"""
         return {
             "type": "function",
             "function": {
@@ -65,4 +65,4 @@ class Tool(ABC):
 
     @abstractmethod
     def execute(self, arguments: JsonObject) -> str:
-        """Execute the tool and return a text result for the model."""
+        """执行工具，并向模型返回文本结果。"""

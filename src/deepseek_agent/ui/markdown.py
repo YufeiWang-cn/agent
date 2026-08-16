@@ -1,3 +1,5 @@
+"""把受支持的 Markdown 子集解析为便于 Tk 渲染的结构。"""
+
 import json
 import re
 from dataclasses import dataclass
@@ -5,6 +7,8 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class MarkdownBlock:
+    """表示段落、代码、表格等块级 Markdown 节点。"""
+
     kind: str
     text: str = ""
     level: int = 0
@@ -16,6 +20,8 @@ class MarkdownBlock:
 
 @dataclass(frozen=True, slots=True)
 class InlineSpan:
+    """表示带有粗体、斜体或代码样式的行内文本片段。"""
+
     text: str
     style: str = "plain"
 
@@ -31,6 +37,7 @@ _INLINE_TOKEN = re.compile(
 
 
 def parse_markdown(content: str) -> list[MarkdownBlock]:
+    """将 Markdown 文本解析为保持原有顺序的块级节点列表。"""
     normalized = content.replace("\r\n", "\n").replace("\r", "\n")
     pure_json = _format_pure_json(normalized)
     if pure_json is not None:
@@ -158,6 +165,7 @@ def parse_markdown(content: str) -> list[MarkdownBlock]:
 
 
 def parse_inline(content: str) -> list[InlineSpan]:
+    """解析受支持的行内样式，并保留普通文本顺序。"""
     spans: list[InlineSpan] = []
     position = 0
     for match in _INLINE_TOKEN.finditer(content):

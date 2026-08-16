@@ -1,3 +1,5 @@
+"""在单个 JSON 文件中持久化项目列表。"""
+
 import json
 from pathlib import Path
 from uuid import uuid4
@@ -6,10 +8,14 @@ from .project import Project
 
 
 class ProjectStoreError(RuntimeError):
+    """表示项目数据的读取、校验或保存操作失败。"""
+
     pass
 
 
 class JsonProjectStore:
+    """管理项目的增删改查，并通过临时文件原子提交完整列表。"""
+
     def __init__(self, path: Path) -> None:
         self._path = path
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -99,6 +105,7 @@ class JsonProjectStore:
             raise ProjectStoreError(f"无法读取项目数据：{error}") from error
 
     def _save_all(self, projects: list[Project]) -> None:
+        # 每次使用唯一临时文件，避免并发或崩溃遗留文件相互覆盖。
         temporary_path = self._path.with_name(
             f".{self._path.name}.{uuid4().hex}.tmp"
         )

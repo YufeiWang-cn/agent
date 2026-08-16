@@ -1,4 +1,4 @@
-"""Pure formatting helpers shared by Tk UI components."""
+"""提供 Tk 界面共用且不依赖控件状态的格式化函数。"""
 
 import json
 from pathlib import Path
@@ -87,7 +87,7 @@ def _conversation_preview(value: str, limit: int = 28) -> str:
 
 
 def _split_emoji_spans(value: str) -> list[tuple[str, bool]]:
-    """Split text while keeping joined emoji sequences in one span."""
+    """拆分普通文本和表情，并保持连接后的表情序列完整。"""
 
     def is_emoji_base(character: str) -> bool:
         codepoint = ord(character)

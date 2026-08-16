@@ -1,3 +1,5 @@
+"""验证模型错误分类、退避重试、指标和安全日志。"""
+
 import tempfile
 import unittest
 from pathlib import Path

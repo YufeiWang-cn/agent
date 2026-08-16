@@ -1,3 +1,5 @@
+"""将所有文件工具的访问范围限制在经过校验的安全工作区内。"""
+
 from pathlib import Path
 from uuid import uuid4
 
@@ -15,10 +17,14 @@ DEFAULT_BLOCKED_PREFIXES = (
 
 
 class WorkspaceAccessError(RuntimeError):
+    """表示路径越界、敏感路径访问或文件格式不符合安全要求。"""
+
     pass
 
 
 class WorkspaceGuard:
+    """统一执行路径归一化、越界防护、敏感路径过滤和原子写入。"""
+
     def __init__(self, root: Path, max_file_size: int) -> None:
         if max_file_size <= 0:
             raise ValueError("max_file_size 必须大于 0")
@@ -81,6 +87,7 @@ class WorkspaceGuard:
             raise WorkspaceAccessError(f"目标文件的父目录不存在：{user_path}")
 
         created = not path.exists()
+        # 先完整写入唯一临时文件，再原子替换目标文件。
         temporary_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
         try:
             temporary_path.write_bytes(encoded_content)
@@ -96,7 +103,8 @@ class WorkspaceGuard:
 
     def relative_path(self, path: Path) -> str:
         relative = path.relative_to(self._root)
-        return "." if not relative.parts else relative.as_posix()  # as_posix() 可以避免 Windows 的反斜杠在 JSON 中出现大量转义
+        # POSIX 形式可以避免 Windows 反斜杠在 JSON 中产生大量转义。
+        return "." if not relative.parts else relative.as_posix()
 
     def is_accessible(self, path: Path) -> bool:
         try:

@@ -1,4 +1,4 @@
-"""Conversation rendering, search, navigation, and embedded cards."""
+"""负责对话渲染、搜索、轮次导航和嵌入式内容卡片。"""
 
 import tkinter as tk
 from tkinter import ttk
@@ -31,7 +31,7 @@ from .theme import (
 def _messages_after_last_user(
     messages: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Return only the model/tool messages belonging to the latest turn."""
+    """仅返回属于最新一轮的模型消息和工具消息。"""
     for index in range(len(messages) - 1, -1, -1):
         if messages[index].get("role") == "user":
             return messages[index + 1 :]
@@ -39,7 +39,7 @@ def _messages_after_last_user(
 
 
 class ConversationView(ttk.Frame):
-    """Render and navigate a conversation without owning Agent execution."""
+    """渲染和导航对话，但不负责执行 Agent。"""
 
     def __init__(
         self,
@@ -1076,8 +1076,8 @@ class ConversationView(ttk.Frame):
         }
 
         self._chat_view.configure(state="normal")
-        # 保留 Text 控件最后一个换行。若删除到 end，Tk 会把用户气泡后的
-        # 分隔行一并折叠，最终的助手标题就会被插回气泡所在显示行。
+        # 保留 Text 控件最后一个换行。
+        # 删除到 end 会折叠气泡后的分隔行，使助手标题插入错误位置。
         self._chat_view.delete(self._live_response_mark, "end-1c")
         self._chat_view.configure(state="disabled")
         self._rendering_history = True

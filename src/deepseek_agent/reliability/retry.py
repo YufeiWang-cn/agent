@@ -1,3 +1,5 @@
+"""为聊天模型增加指数退避重试、指标统计和不记录敏感正文的日志。"""
+
 import logging
 import time
 from collections.abc import Callable, Iterable, Sequence
@@ -12,6 +14,8 @@ from .errors import ModelCallError, classify_model_error
 
 @dataclass(frozen=True, slots=True)
 class RetryPolicy:
+    """定义最大重试次数和指数退避的基础等待时间。"""
+
     max_retries: int = 3
     base_delay_seconds: float = 1.0
 
@@ -26,6 +30,8 @@ class RetryPolicy:
 
 
 class RetryingChatModel:
+    """包装模型调用，并只在流式输出开始前执行安全重试。"""
+
     def __init__(
         self,
         model: ChatModel,
@@ -74,7 +80,8 @@ class RetryingChatModel:
 
         for attempt_index in range(self._policy.max_retries + 1):
             self._metrics.record_attempt()
-            emitted_event = False  # 表示本次尝试是否已经产生任何流式事件
+            # 流式输出开始后不再重试，避免向用户重复发送部分内容。
+            emitted_event = False
             try:
                 for event in self._model.stream(messages, tools):
                     emitted_event = True

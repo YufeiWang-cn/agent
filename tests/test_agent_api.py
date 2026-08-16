@@ -1,3 +1,5 @@
+"""验证 Agent 公共接口、轮次状态和事务式会话操作。"""
+
 import tempfile
 import unittest
 from pathlib import Path

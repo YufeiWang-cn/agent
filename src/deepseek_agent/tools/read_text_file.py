@@ -1,8 +1,12 @@
+"""读取安全工作区内受大小限制的 UTF-8 文本文件。"""
+
 from ..workspace import WorkspaceAccessError, WorkspaceGuard
 from .base import JsonObject, Tool, ToolExecutionError
 
 
 class ReadTextFileTool(Tool):
+    """借助工作区守卫安全读取文本文件。"""
+
     name = "read_text_file"
     description = "读取工作目录内不超过大小限制的 UTF-8 文本文件。"
     retryable = True

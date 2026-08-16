@@ -1,3 +1,5 @@
+"""验证对话消息创建、恢复和截断操作。"""
+
 import unittest
 
 from _path_setup import add_src_to_path

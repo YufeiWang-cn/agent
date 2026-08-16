@@ -1,3 +1,5 @@
+"""验证项目版本、CI 和示例配置元数据的一致性。"""
+
 import re
 import unittest
 from pathlib import Path

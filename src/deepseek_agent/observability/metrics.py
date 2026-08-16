@@ -1,8 +1,12 @@
+"""记录模型请求、重试和耗时等进程内运行指标。"""
+
 from dataclasses import dataclass
 
 
 @dataclass(slots=True)
 class RuntimeMetrics:
+    """累计 Agent 当前进程内的模型请求指标。"""
+
     model_requests: int = 0
     api_attempts: int = 0
     successful_requests: int = 0

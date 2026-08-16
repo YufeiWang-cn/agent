@@ -1,3 +1,5 @@
+"""定义可序列化的会话实体及其消息快照操作。"""
+
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -13,6 +15,8 @@ def _now() -> str:
 
 @dataclass(slots=True)
 class Session:
+    """保存会话标识、项目归属、时间信息和完整消息历史。"""
+
     id: str
     title: str
     created_at: str

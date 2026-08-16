@@ -1,3 +1,5 @@
+"""递归搜索安全工作区内可读取的 UTF-8 文本文件。"""
+
 import json
 from collections import deque
 from pathlib import Path
@@ -11,6 +13,8 @@ MAX_RESULT_LINE_LENGTH = 500
 
 
 class SearchTextTool(Tool):
+    """以广度优先方式搜索文本，并限制结果数量和单行长度。"""
+
     name = "search_text"
     description = "递归搜索工作目录内 UTF-8 文本文件中的文本，并返回匹配位置。"
     retryable = True

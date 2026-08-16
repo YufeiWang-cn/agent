@@ -1,4 +1,4 @@
-"""Project and session navigation for the Tk desktop application."""
+"""实现桌面应用中的项目与会话导航和管理操作。"""
 
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
@@ -13,6 +13,8 @@ UNASSIGNED_PROJECT = "__unassigned_project__"
 
 
 class NavigationAgent(Protocol):
+    """约束侧边栏所需的项目和会话管理接口。"""
+
     @property
     def session_id(self) -> str: ...
 
@@ -45,6 +47,7 @@ def _filter_sessions_by_title(
     sessions: list[Session],
     query: str,
 ) -> list[Session]:
+    """使用不区分大小写的关键字筛选会话标题。"""
     normalized = query.strip().casefold()
     if not normalized:
         return sessions
@@ -52,7 +55,7 @@ def _filter_sessions_by_title(
 
 
 class ProjectSessionSidebar(ttk.Frame):
-    """Own the project/session trees, their menus, and related operations."""
+    """管理项目树、会话树、上下文菜单和相关操作。"""
 
     def __init__(
         self,

@@ -1,3 +1,5 @@
+"""验证会话文件的保存、恢复、排序和兼容性。"""
+
 import json
 import tempfile
 import unittest

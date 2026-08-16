@@ -1,3 +1,5 @@
+"""编排模型、工具、上下文、持久化和运行恢复等 Agent 核心流程。"""
+
 import logging
 import threading
 from pathlib import Path
@@ -64,6 +66,8 @@ CancelCheck = Callable[[], bool]
 
 
 class Agent:
+    """对外提供完整 Agent 能力，并维护每轮执行的一致性边界。"""
+
     def __init__(
         self,
         settings: Settings,
@@ -150,8 +154,8 @@ class Agent:
         这类外部副作用不会被自动撤销。
         相应的工具记录会被保留，从而使会话历史与真实外部状态保持一致。
         """
-        # 回滚检查点：保存本轮开始前的消息数量。
-        # 需要回滚时，只删除该位置之后新增的用户消息、助手消息和工具消息，旧会话历史不受影响。
+        # 回滚检查点保存本轮开始前的消息数量。
+        # 回滚只删除本轮新增消息，不影响旧会话历史。
         checkpoint = len(self._conversation)
         self._begin_turn()
         self._current_turn_id = uuid4().hex
@@ -283,7 +287,7 @@ class Agent:
             raise
         except Exception as error:
             # 模型异常与用户停止使用同一套回滚判断。
-            # 已经完成工具时保留真实记录，尚未完成任何工具时回滚临时消息。
+            # 有工具已经完成时保留真实记录，否则回滚本轮临时消息。
             completed_tool_calls = self._count_tool_results(checkpoint)
             records_preserved = self._preserve_completed_tool_records(
                 checkpoint,
@@ -371,7 +375,7 @@ class Agent:
                 on_event,
                 AgentEvent.tool_call_completed(request, record),
             )
-            # 界面回调发生异常时，已经写入的工具结果仍可阻止错误回滚。
+            # 界面回调发生异常时，已写入的工具结果仍可避免误回滚。
             if on_tool_result is not None:
                 on_tool_result(request, record.model_result)
         return records
@@ -426,7 +430,7 @@ class Agent:
                 record,
             )
         except RunJournalError:
-            # 已经成功或可能成功的副作用必须拥有可靠的结束记录。
+            # 已成功或结果未知的副作用工具调用必须写入可靠的结束记录。
             if record.may_have_side_effect:
                 raise
             self._logger.warning("工具结束事件未能写入运行日志。")
@@ -521,7 +525,7 @@ class Agent:
             self._run_status = status
 
     def _count_tool_results(self, checkpoint: int) -> int:
-        """统计当前轮次中已经拥有结果记录的工具调用数量。"""
+        """统计当前轮次中已有结果记录的工具调用数量。"""
         return sum(
             1
             for message in self._conversation.messages[checkpoint:]
@@ -559,8 +563,8 @@ class Agent:
         """
         # 只检查当前轮次，避免旧轮次中的工具结果影响本轮回滚判断。
         turn_messages = self._conversation.messages[checkpoint:]
-        # 已存在 tool 消息的调用会被视为已经完成并且拥有结果记录。
-        # 工具结果可以是成功、失败或用户拒绝，但任何结果都应保持调用链结构完整。
+        # 如果调用已有对应的 ``tool`` 消息，就视为执行完成且结果已经记录。
+        # 工具结果可以表示成功、失败或用户拒绝，但调用链结构必须始终完整。
         completed_call_ids = {
             str(message.get("tool_call_id", ""))
             for message in turn_messages
@@ -572,7 +576,7 @@ class Agent:
 
         # 一次模型响应可能同时请求多个工具。
         # 用户中途停止时，需要为剩余工具补充“未执行”结果。
-        # 缺少结果会形成只有 tool_call 而没有 tool 的非法消息链。
+        # 缺少结果会形成只有 ``tool_call`` 而没有 ``tool`` 的非法消息链。
         # 后续模型请求可能拒绝包含非法工具消息链的上下文。
         for message in turn_messages:
             for call in message.get("tool_calls") or ():
@@ -602,7 +606,7 @@ class Agent:
             self._save_session()
             self._current_turn_side_effects_saved = True
             return
-        # 纯文本回复没有外部副作用，因此沿用尽力保存以保证对话可继续使用。
+        # 纯文本回复没有外部副作用，因此采用尽力保存策略，避免保存失败阻断对话。
         self._save_session_best_effort()
 
     @property
@@ -682,7 +686,7 @@ class Agent:
         """删除项目；失败时补偿恢复所有受影响会话的原项目归属。"""
         project = self._project_store.get(project_id)
         self._save_session()
-        # 补偿快照会在移动会话前保留磁盘中的完整 Session 对象。
+        # 移动会话前，补偿快照会保留磁盘中的完整 ``Session`` 对象。
         # 后续步骤失败时，可以使用快照恢复原来的项目归属和其他会话字段。
         affected = [
             session
@@ -734,14 +738,14 @@ class Agent:
         cleared_messages = [
             {"role": "system", "content": self._conversation.system_prompt}
         ]
-        # 所有待提交的修改都会先发生在候选副本上。
+        # 所有待提交的修改都先写入候选副本。
         # 当前 Session 和 Conversation 在磁盘保存成功前保持不变。
         candidate = self._copy_session(self._session)
         candidate.update_messages(cleared_messages)
         # 持久化阶段发生保存失败时会直接抛出异常。
         # 保存失败后不会执行内存提交，因此不需要恢复当前 Conversation。
         self._session_store.save(candidate)
-        # 提交阶段：只有候选状态成功落盘后，才同步更新两个内存真相源。
+        # 提交阶段：只有候选状态成功落盘后，才同步更新两个内存状态对象。
         self._conversation.restore(cleared_messages)
         self._session = candidate
 
@@ -749,7 +753,7 @@ class Agent:
         """先保存当前会话，再加载并提交目标会话。"""
         self._save_session()
         session = self._session_store.load(session_id)
-        # restore 会先校验消息结构；校验成功后才替换 Conversation。
+        # 恢复操作会先校验消息结构，校验成功后才替换 ``Conversation``。
         self._conversation.restore(session.messages)
         self._session = session
         return session
@@ -823,7 +827,7 @@ class Agent:
     def _start_new_session(self, project_id: str | None = None) -> Session:
         """创建持久化会话成功后，将其提交为当前内存会话。"""
         session = self._create_new_session(project_id)
-        # _create_new_session 返回前已经完成磁盘保存。
+        # ``_create_new_session`` 返回前已经完成磁盘保存。
         # 因此后续内存切换不会造成界面进入一个尚未持久化的新会话。
         self._conversation.restore(session.messages)
         self._session = session
@@ -868,7 +872,7 @@ class Agent:
                 candidate.title = compact_title[:30]
         candidate.update_messages(self._conversation.messages)
         # 持久化操作是候选状态的提交边界。
-        # save 抛出异常时不会执行内存替换，因此当前 Session 保持操作前状态。
+        # 保存操作抛出异常时不会替换内存对象，当前 ``Session`` 会保持原状。
         # 保存成功后才会把候选对象设置为新的当前 Session。
         self._session_store.save(candidate)
         self._session = candidate

@@ -1,3 +1,5 @@
+"""使用独立 JSON 文件持久化会话，并支持短 ID 查找。"""
+
 import json
 from pathlib import Path
 
@@ -5,10 +7,14 @@ from .session import Session
 
 
 class SessionStoreError(RuntimeError):
+    """表示会话文件的读取、写入或定位操作失败。"""
+
     pass
 
 
 class JsonSessionStore:
+    """以原子替换方式保存会话，并隔离损坏的单个会话文件。"""
+
     def __init__(self, directory: Path) -> None:
         self._directory = directory
         self._directory.mkdir(parents=True, exist_ok=True)
@@ -23,6 +29,7 @@ class JsonSessionStore:
         temporary_path = path.with_suffix(".tmp")
         content = json.dumps(session.to_dict(), ensure_ascii=False, indent=2)
         temporary_path.write_text(content, encoding="utf-8")
+        # 同一文件系统内的替换避免目标文件只写入一部分内容。
         temporary_path.replace(path)
 
     def load(self, session_id: str) -> Session:

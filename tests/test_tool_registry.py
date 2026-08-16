@@ -1,3 +1,5 @@
+"""验证工具注册、结构导出和参数分发。"""
+
 import json
 import unittest
 

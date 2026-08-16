@@ -1,3 +1,5 @@
+"""验证上下文预算裁剪不会破坏完整对话轮次。"""
+
 import tempfile
 import unittest
 from pathlib import Path

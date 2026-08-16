@@ -1,7 +1,11 @@
+"""在命令行中展示工具参数并请求用户确认。"""
+
 from ..tools import Tool
 
 
 class ConsoleToolConfirmer:
+    """通过终端输入确认可能产生副作用的工具调用。"""
+
     def confirm(self, tool: Tool, arguments: str) -> bool:
         print(
             "\n[需要确认]\n"
