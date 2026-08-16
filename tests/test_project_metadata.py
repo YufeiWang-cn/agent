@@ -42,6 +42,17 @@ class ProjectMetadataTests(unittest.TestCase):
 
         self.assertIn('PYTHONUTF8: "1"', workflow)
 
+    def test_env_example_does_not_force_a_machine_specific_workspace(self) -> None:
+        env_example = (PROJECT_ROOT / ".env.example").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotRegex(env_example, r"(?m)^AGENT_WORKSPACE\s*=")
+        self.assertIn(
+            "# AGENT_WORKSPACE=C:/path/to/your/workspace",
+            env_example,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
