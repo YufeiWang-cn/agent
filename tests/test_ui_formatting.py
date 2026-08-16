@@ -9,7 +9,7 @@ add_src_to_path()
 
 from deepseek_agent.config import Settings
 from deepseek_agent.memory import Session
-from deepseek_agent.ui.cards import MarkdownCodeCard, UserMessageCard
+from deepseek_agent.ui.cards import MarkdownCodeCard, ToolCallCard, UserMessageCard
 from deepseek_agent.ui.conversation_view import (
     ConversationView,
     _messages_after_last_user,
@@ -378,6 +378,16 @@ class UiFormattingTests(unittest.TestCase):
                 return_value=fake_agent,
             ):
                 app = AgentApp(root, settings)
+            app._sidebar._schedule_filter()
+            app._conversation._schedule_search_refresh()
+            resize_event = tk.Event()
+            resize_event.width = 640
+            app._conversation._resize_tool_cards(resize_event)
+            self.assertIsNotNone(app._drain_job)
+            self.assertIsNotNone(app._layout_job)
+            self.assertIsNotNone(app._sidebar._filter_job)
+            self.assertIsNotNone(app._conversation._search_job)
+            self.assertIsNotNone(app._conversation._resize_job)
             app._worker = worker
             app._busy = True
             with patch("tkinter.messagebox.askyesno", return_value=True):
@@ -393,6 +403,12 @@ class UiFormattingTests(unittest.TestCase):
 
             self.assertTrue(app._closed)
             self.assertEqual(fake_agent.saved, 1)
+            self.assertIsNone(app._drain_job)
+            self.assertIsNone(app._layout_job)
+            self.assertIsNone(app._sidebar._filter_job)
+            self.assertIsNone(app._conversation._search_job)
+            self.assertIsNone(app._conversation._resize_job)
+            self.assertTrue(app._conversation._disposed)
         finally:
             if not getattr(app, "_closed", False):
                 root.destroy()
@@ -422,6 +438,61 @@ class UiFormattingTests(unittest.TestCase):
             if card._editor._scroll_x.grid_info():
                 expected += card._editor._scroll_x.winfo_reqheight()
             self.assertEqual(int(card.frame.cget("height")), expected)
+        finally:
+            root.destroy()
+
+    def test_code_card_destroy_cancels_pending_callbacks(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk 不可用：{error}")
+        root.withdraw()
+        try:
+            chat = tk.Text(root, width=80, height=20)
+            chat.pack()
+            card = MarkdownCodeCard(chat, "print('hello')", "python")
+            height_job = card._height_job
+            card._copy()
+            copy_job = card._copy_reset_job
+
+            self.assertIsNotNone(height_job)
+            self.assertIsNotNone(copy_job)
+            self.assertIn(height_job, root.tk.call("after", "info"))
+            self.assertIn(copy_job, root.tk.call("after", "info"))
+
+            card.destroy()
+
+            pending = root.tk.call("after", "info")
+            self.assertNotIn(height_job, pending)
+            self.assertNotIn(copy_job, pending)
+            self.assertIsNone(card._height_job)
+            self.assertIsNone(card._copy_reset_job)
+            self.assertIsNone(card._editor._horizontal_job)
+        finally:
+            root.destroy()
+
+    def test_tool_card_destroy_closes_fullscreen_viewer_callbacks(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk 不可用：{error}")
+        root.withdraw()
+        try:
+            chat = tk.Text(root, width=80, height=20)
+            chat.pack()
+            card = ToolCallCard(chat, "demo_tool", "{}")
+            card._open_fullscreen()
+            viewer = card._viewer
+            self.assertIsNotNone(viewer)
+            fullscreen_job = viewer._fullscreen_job
+            self.assertIsNotNone(fullscreen_job)
+            self.assertIn(fullscreen_job, root.tk.call("after", "info"))
+
+            card.destroy()
+
+            self.assertNotIn(fullscreen_job, root.tk.call("after", "info"))
+            self.assertFalse(viewer._window.winfo_exists())
+            self.assertEqual(card._tabs._items, {})
         finally:
             root.destroy()
 

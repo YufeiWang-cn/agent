@@ -180,6 +180,7 @@ class MarkdownCodeCard:
         self._language = detected_language or "text"
         self._line_count = max(1, formatted.count("\n") + 1)
         self._height_job: str | None = None
+        self._copy_reset_job: str | None = None
 
         self.frame = tk.Frame(
             parent,
@@ -257,21 +258,28 @@ class MarkdownCodeCard:
         self._schedule_height_sync()
 
     def destroy(self) -> None:
-        if self._height_job is not None:
+        for attribute in ("_height_job", "_copy_reset_job"):
+            job = getattr(self, attribute)
+            if job is None:
+                continue
             try:
-                self.frame.after_cancel(self._height_job)
+                self.frame.after_cancel(job)
             except tk.TclError:
                 pass
-            self._height_job = None
+            setattr(self, attribute, None)
+        self._editor.destroy()
         self.frame.destroy()
 
     def _copy(self) -> None:
         self.frame.clipboard_clear()
         self.frame.clipboard_append(self._content)
         self._copy_button.configure(text="已复制")
-        self.frame.after(1200, self._reset_copy_label)
+        if self._copy_reset_job is not None:
+            self.frame.after_cancel(self._copy_reset_job)
+        self._copy_reset_job = self.frame.after(1200, self._reset_copy_label)
 
     def _reset_copy_label(self) -> None:
+        self._copy_reset_job = None
         if self._copy_button.winfo_exists():
             self._copy_button.configure(text="复制")
 
@@ -878,6 +886,7 @@ class FullscreenToolViewer:
         self._window.title(f"工具详情 · {name}")
         self._window.configure(background="#F5F7FA")
         self._fullscreen = True
+        self._fullscreen_job: str | None = None
 
         toolbar = tk.Frame(self._window, background="#FFFFFF", height=58)
         toolbar.pack(fill="x")
@@ -899,7 +908,7 @@ class FullscreenToolViewer:
         tk.Button(
             toolbar,
             text="关闭  Esc",
-            command=self._window.destroy,
+            command=self._close,
             background="#EEF2F6",
             activebackground="#DDE3EB",
             foreground=TEXT_SECONDARY,
@@ -975,9 +984,28 @@ class FullscreenToolViewer:
 
         self._window.bind("<F11>", self._toggle_fullscreen)
         self._window.bind("<Escape>", self._handle_escape)
-        self._window.after_idle(
-            lambda: self._window.attributes("-fullscreen", True)
-        )
+        self._window.protocol("WM_DELETE_WINDOW", self._close)
+        self._fullscreen_job = self._window.after_idle(self._enter_fullscreen)
+
+    def _enter_fullscreen(self) -> None:
+        self._fullscreen_job = None
+        if self._window.winfo_exists():
+            self._window.attributes("-fullscreen", True)
+
+    def _close(self) -> None:
+        if not self._window.winfo_exists():
+            return
+        if self._fullscreen_job is not None:
+            try:
+                self._window.after_cancel(self._fullscreen_job)
+            except tk.TclError:
+                pass
+            self._fullscreen_job = None
+        self._tabs.destroy()
+        self._window.destroy()
+
+    def close(self) -> None:
+        self._close()
 
     def _copy_current(self) -> None:
         self._window.clipboard_clear()
@@ -1007,7 +1035,7 @@ class FullscreenToolViewer:
         if self._fullscreen:
             self._toggle_fullscreen()
         else:
-            self._window.destroy()
+            self._close()
         return "break"
 
 
@@ -1019,6 +1047,7 @@ class ToolCallCard:
         self._result: str | None = None
         self._result_language = _content_language_hint(arguments)
         self._expanded = False
+        self._viewer: FullscreenToolViewer | None = None
 
         self.frame = tk.Frame(
             parent,
@@ -1155,10 +1184,18 @@ class ToolCallCard:
         self._summary.configure(wraplength=max(200, visible_width - 36))
 
     def destroy(self) -> None:
+        if self._viewer is not None:
+            self._viewer.close()
+            self._viewer = None
+        self._tabs.destroy()
         self.frame.destroy()
 
     def _open_fullscreen(self) -> None:
-        FullscreenToolViewer(
+        if self._viewer is not None and self._viewer._window.winfo_exists():
+            self._viewer._window.lift()
+            self._viewer._window.focus_force()
+            return
+        self._viewer = FullscreenToolViewer(
             self.frame.winfo_toplevel(),
             self._name,
             self._arguments,

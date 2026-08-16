@@ -88,6 +88,10 @@ class AgentApp:
         self._stream_character_count = 0
         self._activity_phase = ""
         self._activity_job: str | None = None
+        self._drain_job: str | None = None
+        self._layout_job: str | None = None
+        self._restore_turn_job: str | None = None
+        self._pending_restore_turn: int | None = None
         self._active_prompt: str | None = None
         self._close_pending = False
         self._closed = False
@@ -104,7 +108,7 @@ class AgentApp:
         self._update_header()
         self._input.focus_set()
         self._show_recovery_issues()
-        self._root.after(50, self._drain_events)
+        self._schedule_event_drain(50)
 
     def _show_recovery_issues(self) -> None:
         """在界面完成初始化后提示用户核对上次未明确结束的工具。"""
@@ -301,7 +305,7 @@ class AgentApp:
         )
         self._conversation.grid(row=1, column=0, sticky="nsew")
         self._build_input(self._main_panel)
-        self._root.after_idle(lambda: self._paned.sash_place(0, 240, 0))
+        self._schedule_sidebar_layout()
 
     def _build_header(self, main: ttk.Frame) -> None:
         header = ttk.Frame(main, style="App.TFrame")
@@ -626,6 +630,7 @@ class AgentApp:
             self._stop_button.configure(state="disabled")
 
     def _drain_events(self) -> None:
+        self._drain_job = None
         if self._closed:
             return
         pending_events = _dequeue_ui_events(self._events)
@@ -633,16 +638,21 @@ class AgentApp:
             self._handle_event(event_name, payload)
         if self._close_pending and not self._busy:
             if self._worker is not None and self._worker.is_alive():
-                self._root.after(20, self._drain_events)
+                self._schedule_event_drain(20)
             else:
                 self._finalize_close()
                 if not self._closed:
-                    self._root.after(50, self._drain_events)
+                    self._schedule_event_drain(50)
             return
         # 流式输出期间提高刷新频率；单次批量有上限，避免大量 token 或工具
         # 事件占满主线程，确保滚动、停止按钮和窗口拖动仍能及时响应。
         next_delay = 8 if not self._events.empty() else 20 if self._busy else 50
-        self._root.after(next_delay, self._drain_events)
+        self._schedule_event_drain(next_delay)
+
+    def _schedule_event_drain(self, delay: int) -> None:
+        if self._closed or self._drain_job is not None:
+            return
+        self._drain_job = self._root.after(delay, self._drain_events)
 
     def _handle_event(self, event_name: str, payload: Any) -> None:
         if event_name == "text":
@@ -701,9 +711,7 @@ class AgentApp:
             self._update_header()
             self._active_prompt = None
             if restore_turn is not None:
-                self._root.after_idle(
-                    lambda turn=restore_turn: self._conversation.jump_to_turn(turn)
-                )
+                self._schedule_turn_restore(restore_turn)
             return
 
         if event_name == "step_limit_reached":
@@ -852,6 +860,50 @@ class AgentApp:
         self._input.mark_set("insert", "end-1c")
         self._input.focus_set()
 
+    def _schedule_turn_restore(self, turn_number: int) -> None:
+        self._cancel_job("_restore_turn_job")
+        self._pending_restore_turn = turn_number
+        self._restore_turn_job = self._root.after_idle(
+            self._restore_selected_turn
+        )
+
+    def _restore_selected_turn(self) -> None:
+        self._restore_turn_job = None
+        turn_number = self._pending_restore_turn
+        self._pending_restore_turn = None
+        if self._closed or turn_number is None:
+            return
+        self._conversation.jump_to_turn(turn_number)
+
+    def _schedule_sidebar_layout(self) -> None:
+        self._cancel_job("_layout_job")
+        self._layout_job = self._root.after_idle(self._place_sidebar_sash)
+
+    def _place_sidebar_sash(self) -> None:
+        self._layout_job = None
+        if self._closed or not self._sidebar_visible:
+            return
+        self._paned.sash_place(0, 240, 0)
+
+    def _cancel_job(self, attribute: str) -> None:
+        job = getattr(self, attribute)
+        if job is None:
+            return
+        try:
+            self._root.after_cancel(job)
+        except tk.TclError:
+            pass
+        setattr(self, attribute, None)
+
+    def _cancel_ui_jobs(self) -> None:
+        for attribute in (
+            "_drain_job",
+            "_layout_job",
+            "_restore_turn_job",
+        ):
+            self._cancel_job(attribute)
+        self._pending_restore_turn = None
+
     def _toggle_sidebar(self) -> None:
         if self._sidebar_visible:
             self._paned.forget(self._sidebar)
@@ -865,7 +917,7 @@ class AgentApp:
             stretch="never",
         )
         self._sidebar_visible = True
-        self._root.after_idle(lambda: self._paned.sash_place(0, 240, 0))
+        self._schedule_sidebar_layout()
 
     def _clear_conversation(self) -> None:
         if self._is_busy():
@@ -943,6 +995,9 @@ class AgentApp:
             return
         self._closed = True
         self._stop_activity()
+        self._cancel_ui_jobs()
+        self._sidebar.cancel_pending_callbacks()
+        self._conversation.dispose()
         self._root.destroy()
 
 

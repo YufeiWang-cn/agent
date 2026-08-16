@@ -72,6 +72,7 @@ class ConversationView(ttk.Frame):
         self._search_match_index = -1
         self._search_job: str | None = None
         self._empty_state_frame: tk.Frame | None = None
+        self._disposed = False
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
         self._build_chat(self)
@@ -170,6 +171,28 @@ class ConversationView(ttk.Frame):
 
     def render_history(self, messages: list[dict[str, Any]]) -> None:
         self._render_history(messages)
+
+    def cancel_pending_callbacks(self) -> None:
+        for attribute in ("_search_job", "_turn_sync_job", "_resize_job"):
+            job = getattr(self, attribute)
+            if job is None:
+                continue
+            try:
+                self._root.after_cancel(job)
+            except tk.TclError:
+                pass
+            setattr(self, attribute, None)
+
+    def dispose(self) -> None:
+        if self._disposed:
+            return
+        self._disposed = True
+        self.cancel_pending_callbacks()
+        self._clear_tool_cards()
+
+    def destroy(self) -> None:
+        self.dispose()
+        super().destroy()
 
     def _build_chat(self, main: ttk.Frame) -> None:
         card = ttk.Frame(main, style="Card.TFrame", padding=1)

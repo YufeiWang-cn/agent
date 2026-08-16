@@ -225,6 +225,15 @@ class ProjectSessionSidebar(ttk.Frame):
         self._session_tree.configure(selectmode="none" if locked else "browse")
         self._filter_entry.configure(state=state)
 
+    def cancel_pending_callbacks(self) -> None:
+        if self._filter_job is None:
+            return
+        try:
+            self._root.after_cancel(self._filter_job)
+        except tk.TclError:
+            pass
+        self._filter_job = None
+
     def refresh(
         self,
         *,

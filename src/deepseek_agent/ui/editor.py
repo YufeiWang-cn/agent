@@ -35,6 +35,7 @@ class SyntaxText(tk.Frame):
         self._language = "text"
         self._font_size = font_size
         self._auto_hide_horizontal = auto_hide_horizontal
+        self._horizontal_job: str | None = None
         self.text = tk.Text(
             self,
             wrap="none",
@@ -106,7 +107,7 @@ class SyntaxText(tk.Frame):
             self.text.insert("end", segment, "emoji" if is_emoji else ())
         self._highlight(content, language)
         self.text.configure(state="disabled")
-        self.after_idle(self._refresh_horizontal_scrollbar)
+        self._queue_horizontal_refresh()
 
     def _handle_horizontal_scroll(self, first: str, last: str) -> None:
         self._scroll_x.set(first, last)
@@ -115,9 +116,15 @@ class SyntaxText(tk.Frame):
 
     def _schedule_horizontal_refresh(self, _event: tk.Event) -> None:
         if self._auto_hide_horizontal:
-            self.after_idle(self._refresh_horizontal_scrollbar)
+            self._queue_horizontal_refresh()
+
+    def _queue_horizontal_refresh(self) -> None:
+        if self._horizontal_job is not None or not self.winfo_exists():
+            return
+        self._horizontal_job = self.after_idle(self._refresh_horizontal_scrollbar)
 
     def _refresh_horizontal_scrollbar(self) -> None:
+        self._horizontal_job = None
         if not self.winfo_exists() or not self._auto_hide_horizontal:
             return
         first, last = self.text.xview()
@@ -132,6 +139,15 @@ class SyntaxText(tk.Frame):
                 self._scroll_x.grid()
         else:
             self._scroll_x.grid_remove()
+
+    def destroy(self) -> None:
+        if self._horizontal_job is not None:
+            try:
+                self.after_cancel(self._horizontal_job)
+            except tk.TclError:
+                pass
+            self._horizontal_job = None
+        super().destroy()
 
     def _configure_tags(self) -> None:
         self.text.tag_configure("key", foreground="#0550AE")
@@ -334,5 +350,12 @@ class EditorTabs(tk.Frame):
         if not isinstance(editor, SyntaxText):
             raise RuntimeError("当前标签不是代码编辑器")
         return editor
+
+    def destroy(self) -> None:
+        for _title, widget, _button in self._items.values():
+            if widget.winfo_exists():
+                widget.destroy()
+        self._items.clear()
+        super().destroy()
 
 
