@@ -1,0 +1,9 @@
+name: agent
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - tk=8.6
+  - pip:
+      - -e .

@@ -9,20 +9,27 @@
 1. 下载并解压项目。
 2. 打开解压后的项目文件夹，确认其中能看到 `pyproject.toml`。
 3. 在文件夹空白处右键，选择“在终端中打开”。
-4. 首次使用时创建 Conda 环境（已经创建过可跳过）：
+4. 首次使用时根据项目环境文件创建 Conda 环境（已经创建过可跳过）：
 
 ```bat
-conda create -n agent python=3.11 -y
+conda env create -f environment.yml
 ```
 
-5. 安装项目：
+5. 激活环境：
 
 ```bat
 conda activate agent
-python -m pip install -e .
 ```
 
-这里的 `.` 表示当前文件夹，因此终端需要位于包含 `pyproject.toml` 的项目根目录。
+`environment.yml` 会安装项目及其运行依赖。项目当前推荐使用 Python 3.10，最低要求也为 Python 3.10；推荐版本统一记录在 `.python-version` 中。
+
+如果已经存在 `agent` 环境，需要按项目配置同步环境时执行：
+
+```bat
+conda env update -n agent -f environment.yml
+```
+
+为避免 Conda 在解析单个软件包依赖时改变 Python 版本，更新核心环境组件后应重新使用上述命令同步项目环境。
 
 ### 方式二：使用 Git 安装
 
@@ -31,9 +38,8 @@ python -m pip install -e .
 ```bat
 git clone https://github.com/YufeiWang-cn/agent.git
 cd agent
-conda create -n agent python=3.11 -y
+conda env create -f environment.yml
 conda activate agent
-python -m pip install -e .
 ```
 
 ### 安装完成后的必要配置
@@ -118,3 +124,5 @@ python main.py
 ```bat
 python -m unittest discover -s tests -v
 ```
+
+GitHub Actions 会读取 `.python-version` 中的推荐版本，并在代码推送和拉取请求中自动执行同一条测试命令。
