@@ -35,6 +35,13 @@ class ProjectMetadataTests(unittest.TestCase):
         self.assertIn(f"推荐使用 Python {recommended}", readme)
         self.assertIn(f"最低要求也为 Python {recommended}", readme)
 
+    def test_windows_ci_enables_python_utf8_mode(self) -> None:
+        workflow = (
+            PROJECT_ROOT / ".github" / "workflows" / "tests.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('PYTHONUTF8: "1"', workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
