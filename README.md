@@ -52,6 +52,8 @@ conda activate agent
 
 `AGENT_WORKSPACE` 是文件工具唯一允许访问的根目录，默认是项目根目录；`AGENT_MAX_FILE_SIZE` 控制单次读取或写入的最大字节数，默认 `100000`。
 
+受控命令默认最多运行 120 秒，stdout 和 stderr 分别最多返回 50000 字节。可以通过 `AGENT_COMMAND_TIMEOUT` 和 `AGENT_MAX_COMMAND_OUTPUT` 调整。
+
 ## 运行
 
 桌面可视化界面：
@@ -110,12 +112,15 @@ python main.py
 - `list_directory`：列出工作目录内的直接子项
 - `read_text_file`：读取工作目录内的 UTF-8 文本文件
 - `search_text`：递归搜索工作目录内的 UTF-8 文本并返回文件和行号
+- `run_command`：在工作目录内无 Shell 地运行受控 Git 或 Python 命令
 - `replace_text`：精确替换文件中唯一一处文本，执行前必须确认
 - `write_text_file`：创建或完整覆盖 UTF-8 文本文件，执行前必须确认
 
-计算器和时间工具属于安全工具，会自动执行。工具将 `requires_confirmation` 设置为 `True` 后，Agent 会在命令行展示工具名称、说明和参数，并且只在用户输入 `y` 或 `yes` 后执行；直接回车或输入 `n` 会拒绝执行。
+计算器、时间工具和只读 Git 查询属于安全工具，会自动执行。运行测试、Python 脚本、依赖安装以及可能改变仓库或远端状态的 Git 命令必须确认。Agent 会展示工具名称、说明和完整参数，并且只在用户输入 `y` 或 `yes` 后执行；直接回车或输入 `n` 会拒绝执行。
 
-文件工具禁止越过工作目录，并阻止访问 `.env`、`.git`、`.venv`、`__pycache__`，以及 Agent 内部状态路径 `data/sessions`、`data/runs`、`data/projects.json` 和 `logs`。普通项目文件（例如 `data/dataset.json`）仍然可以访问。文本搜索最多返回 100 条结果；局部替换仅在原文本恰好匹配一次时执行。文件写入通过临时文件替换目标文件；暂不提供删除、移动或 Shell 工具。
+文件工具禁止越过工作目录，并阻止访问 `.env`、`.git`、`.venv`、`__pycache__`，以及 Agent 内部状态路径 `data/sessions`、`data/runs`、`data/projects.json` 和 `logs`。普通项目文件（例如 `data/dataset.json`）仍然可以访问。文本搜索最多返回 100 条结果；局部替换仅在原文本恰好匹配一次时执行。文件写入通过临时文件替换目标文件。
+
+命令工具不使用 Shell，只接受参数数组。第一版仅允许明确支持的 Git 和 Python 命令，禁止 `cmd`、PowerShell、Bash、管道、重定向、命令拼接、内联 Python、`git reset` 和 `git clean`。执行目录和 Git 仓库根目录都必须位于工作区内；子进程不会继承名称中包含 Key、Token、Secret、Password 或 Credential 的环境变量。暂不提供删除和移动工具。
 
 诊断日志保存在 `logs/agent.log`，使用大小轮转，最多保留 3 个备份。工具执行与崩溃恢复日志以 JSONL 格式保存在 `data/runs/`。两类日志都不会记录 API Key、用户消息正文或模型回答正文；恢复日志也不会保存完整工具参数、工具结果或异常正文，只保存参数键名、大小、摘要和执行状态等恢复所需信息。
 

@@ -1,11 +1,24 @@
 """定义工具协议、影响等级和统一异常类型。"""
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
 
 JsonObject = dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class ToolExecutionContext:
+    """向需要协作式取消的工具传递本轮执行状态。"""
+
+    should_cancel: Callable[[], bool] | None = None
+
+    @property
+    def cancelled(self) -> bool:
+        return self.should_cancel is not None and self.should_cancel()
 
 
 class ToolError(Exception):
@@ -50,6 +63,24 @@ class Tool(ABC):
     idempotent: bool = False
     supports_rollback: bool = False
     timeout_seconds: float | None = None
+
+    def requires_confirmation_for(self, arguments: JsonObject) -> bool:
+        """返回当前参数是否需要确认；动态风险工具可以覆盖此方法。"""
+        # 普通工具沿用类级静态策略，只有 run_command 这类风险随参数变化的工具需要覆盖此方法。
+        return self.requires_confirmation
+
+    def effect_for(self, arguments: JsonObject) -> ToolEffect:
+        """返回当前参数对应的实际影响等级。"""
+        return self.effect
+
+    def execute_with_context(
+        self,
+        arguments: JsonObject,
+        context: ToolExecutionContext,
+    ) -> str:
+        """执行支持取消上下文的工具；普通工具继续使用旧执行入口。"""
+        # 此兼容入口保留了原有工具签名，避免为新增取消能力而改写全部工具。
+        return self.execute(arguments)
 
     @property
     def schema(self) -> JsonObject:

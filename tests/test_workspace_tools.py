@@ -209,6 +209,7 @@ class WorkspaceToolTests(unittest.TestCase):
                 "list_directory",
                 "read_text_file",
                 "search_text",
+                "run_command",
                 "replace_text",
                 "write_text_file",
             ),
@@ -216,6 +217,7 @@ class WorkspaceToolTests(unittest.TestCase):
         self.assertFalse(registry.get("list_directory").requires_confirmation)
         self.assertFalse(registry.get("read_text_file").requires_confirmation)
         self.assertFalse(registry.get("search_text").requires_confirmation)
+        self.assertTrue(registry.get("run_command").requires_confirmation)
         self.assertTrue(registry.get("replace_text").requires_confirmation)
         self.assertTrue(registry.get("write_text_file").requires_confirmation)
 

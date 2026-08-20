@@ -15,6 +15,8 @@ DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_BASE_DELAY = 1.0
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_MAX_FILE_SIZE = 100_000
+DEFAULT_COMMAND_TIMEOUT = 120.0
+DEFAULT_MAX_COMMAND_OUTPUT = 50_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +33,8 @@ class Settings:
     log_level: str = DEFAULT_LOG_LEVEL
     workspace_root: Path = PROJECT_ROOT
     max_file_size: int = DEFAULT_MAX_FILE_SIZE
+    command_timeout: float = DEFAULT_COMMAND_TIMEOUT
+    max_command_output: int = DEFAULT_MAX_COMMAND_OUTPUT
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -109,6 +113,26 @@ class Settings:
         if max_file_size <= 0:
             raise RuntimeError("AGENT_MAX_FILE_SIZE 必须是正整数。")
 
+        try:
+            command_timeout = float(
+                os.getenv(
+                    "AGENT_COMMAND_TIMEOUT",
+                    str(DEFAULT_COMMAND_TIMEOUT),
+                ).strip()
+            )
+            max_command_output = int(
+                os.getenv(
+                    "AGENT_MAX_COMMAND_OUTPUT",
+                    str(DEFAULT_MAX_COMMAND_OUTPUT),
+                ).strip()
+            )
+        except ValueError as error:
+            raise RuntimeError("命令超时和输出限制必须是数字。") from error
+        if command_timeout <= 0:
+            raise RuntimeError("AGENT_COMMAND_TIMEOUT 必须大于 0。")
+        if max_command_output <= 0:
+            raise RuntimeError("AGENT_MAX_COMMAND_OUTPUT 必须是正整数。")
+
         return cls(
             api_key=api_key,
             base_url=os.getenv(
@@ -123,4 +147,6 @@ class Settings:
             log_level=log_level,
             workspace_root=workspace_root,
             max_file_size=max_file_size,
+            command_timeout=command_timeout,
+            max_command_output=max_command_output,
         )

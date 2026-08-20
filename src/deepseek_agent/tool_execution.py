@@ -12,6 +12,7 @@ from .tools import (
     Tool,
     ToolEffect,
     ToolError,
+    ToolExecutionContext,
     ToolExecutionError,
     ToolRegistry,
 )
@@ -121,6 +122,7 @@ class ToolExecutor:
         *,
         on_confirmation_state: ConfirmationStateCallback | None = None,
         before_execution: BeforeExecutionCallback | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> ToolExecutionRecord:
         """执行一次工具调用，并始终以结构化记录返回实际结果。"""
         started_at = self._clock()
@@ -129,13 +131,18 @@ class ToolExecutor:
         confirmation_requested = False
         confirmation_granted: bool | None = None
         execution_started = False
+        effect = ToolEffect.READ_ONLY
 
         try:
             tool, arguments = self._registry.prepare(
                 request.name,
                 request.arguments,
             )
-            confirmation_requested = tool.requires_confirmation
+            # 风险必须根据本次调用参数计算。
+            # 例如，run_command 执行 git status 时属于只读操作。
+            # 执行 git push 时会产生外部副作用，因此必须要求确认。
+            effect = tool.effect_for(arguments)
+            confirmation_requested = tool.requires_confirmation_for(arguments)
             if confirmation_requested:
                 self._notify_confirmation_state(on_confirmation_state, True)
                 try:
@@ -149,6 +156,7 @@ class ToolExecutor:
                     return self._record(
                         request,
                         tool=tool,
+                        effect=effect,
                         arguments=arguments,
                         status=ToolExecutionStatus.REJECTED,
                         model_result="用户拒绝执行该工具。",
@@ -163,19 +171,27 @@ class ToolExecutor:
                 tool_name=tool.name,
                 raw_arguments=request.arguments,
                 arguments=arguments,
-                effect=tool.effect,
+                effect=effect,
                 retryable=tool.retryable,
                 idempotent=tool.idempotent,
                 supports_rollback=tool.supports_rollback,
                 timeout_seconds=tool.timeout_seconds,
             )
             if before_execution is not None:
+                # 可能产生副作用的工具必须先把“即将执行”写入运行日志。
+                # 完成日志写入后，系统才能真正启动命令。
+                # 否则，崩溃恢复将无法判断命令是否已经执行。
                 before_execution(start)
             execution_started = True
-            result = tool.execute(arguments)
+            result = tool.execute_with_context(
+                arguments,
+                # 取消信号通过通用上下文传入，旧工具则继续使用兼容执行入口。
+                ToolExecutionContext(should_cancel=should_cancel),
+            )
             return self._record(
                 request,
                 tool=tool,
+                effect=effect,
                 arguments=arguments,
                 status=ToolExecutionStatus.SUCCEEDED,
                 model_result=result,
@@ -193,6 +209,7 @@ class ToolExecutor:
             return self._record(
                 request,
                 tool=tool,
+                effect=effect,
                 arguments=arguments,
                 status=status,
                 model_result=f"工具执行失败：{error}",
@@ -206,6 +223,7 @@ class ToolExecutor:
             return self._record(
                 request,
                 tool=tool,
+                effect=effect,
                 arguments=arguments,
                 status=ToolExecutionStatus.FAILED,
                 model_result=f"工具执行失败：{error}",
@@ -220,12 +238,13 @@ class ToolExecutor:
                 ToolExecutionStatus.RESULT_UNKNOWN
                 if execution_started
                 and tool is not None
-                and tool.effect is not ToolEffect.READ_ONLY
+                and effect is not ToolEffect.READ_ONLY
                 else ToolExecutionStatus.FAILED
             )
             return self._record(
                 request,
                 tool=tool,
+                effect=effect,
                 arguments=arguments,
                 status=status,
                 model_result=f"工具发生未预期错误：{error}",
@@ -250,6 +269,7 @@ class ToolExecutor:
         request: ToolCallRequest,
         *,
         tool: Tool | None,
+        effect: ToolEffect,
         arguments: JsonObject | None,
         status: ToolExecutionStatus,
         model_result: str,
@@ -266,7 +286,7 @@ class ToolExecutor:
             raw_arguments=request.arguments,
             arguments=arguments,
             status=status,
-            effect=tool.effect if tool is not None else ToolEffect.READ_ONLY,
+            effect=effect,
             model_result=model_result,
             started_at=started_at,
             finished_at=self._clock(),

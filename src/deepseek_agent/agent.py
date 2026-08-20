@@ -101,6 +101,8 @@ class Agent:
             else build_default_registry(
                 settings.workspace_root,
                 settings.max_file_size,
+                settings.command_timeout,
+                settings.max_command_output,
             )
         )
         self._conversation = Conversation(settings.system_prompt)
@@ -360,6 +362,8 @@ class Agent:
                     )
                 ),
                 before_execution=self._record_tool_started,
+                # GUI 的停止信号会继续传递给长时间运行的命令，而不只在工具之间检查。
+                should_cancel=should_cancel,
             )
             records.append(record)
             self._current_turn_tool_records.append(record)
