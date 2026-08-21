@@ -9,6 +9,7 @@ from typing import Any
 
 from ..tools import Tool
 from .cards import RenderedMarkdownPreview
+from .diff_viewer import DiffViewer
 from .editor import EditorTabs
 from .formatting import _confirmation_content_previews
 from .theme import APP_BACKGROUND, EDITOR_BACKGROUND, EDITOR_BORDER
@@ -49,6 +50,7 @@ class ToolConfirmationDialog:
 
     def __init__(self, parent: tk.Tk, request: ConfirmationRequest) -> None:
         self.allowed = False
+        self._fullscreen = False
         self._window = tk.Toplevel(parent)
         self._window.title("确认工具调用")
         self._window.geometry("720x540")
@@ -57,7 +59,8 @@ class ToolConfirmationDialog:
         self._window.transient(parent)
         self._window.grab_set()
         self._window.protocol("WM_DELETE_WINDOW", self._deny)
-        self._window.bind("<Escape>", lambda _event: self._deny())
+        self._window.bind("<F11>", self._toggle_fullscreen)
+        self._window.bind("<Escape>", self._handle_escape)
 
         container = ttk.Frame(
             self._window,
@@ -80,6 +83,13 @@ class ToolConfirmationDialog:
             command=self._allow,
             style="Accent.TButton",
         ).pack(side="right", padx=(0, 8))
+        self._fullscreen_button = ttk.Button(
+            actions,
+            text="全屏查看  F11",
+            command=self._toggle_fullscreen,
+            style="Secondary.TButton",
+        )
+        self._fullscreen_button.pack(side="left")
         actions.place(
             relx=0,
             rely=1,
@@ -120,13 +130,13 @@ class ToolConfirmationDialog:
             borderwidth=0,
         )
         editor_frame.grid(row=3, column=0, sticky="nsew")
-        arguments_view = EditorTabs(
+        self._arguments_view = EditorTabs(
             editor_frame,
             editor_font_size=11,
             tab_font_size=9,
         )
-        arguments_view.pack(fill="both", expand=True)
-        arguments_view.add_or_update(
+        self._arguments_view.pack(fill="both", expand=True)
+        self._arguments_view.add_or_update(
             "arguments",
             "完整参数",
             request.arguments,
@@ -135,7 +145,21 @@ class ToolConfirmationDialog:
         for key, title, value, language in _confirmation_content_previews(
             request.arguments
         ):
-            arguments_view.add_or_update(
+            if language == "diff":
+                self._arguments_view.add_widget(
+                    key,
+                    title,
+                    "DIFF",
+                    lambda parent, diff=value: DiffViewer(
+                        parent,
+                        diff,
+                        font_size=11,
+                    ),
+                    select=True,
+                )
+                continue
+
+            self._arguments_view.add_or_update(
                 key,
                 title.replace("预览", "源码")
                 if language == "markdown"
@@ -144,7 +168,7 @@ class ToolConfirmationDialog:
                 language,
             )
             if language == "markdown":
-                arguments_view.add_widget(
+                self._arguments_view.add_widget(
                     f"rendered_{key}",
                     "渲染预览",
                     "MARKDOWN",
@@ -173,5 +197,24 @@ class ToolConfirmationDialog:
     def _deny(self) -> None:
         self.allowed = False
         self._window.destroy()
+
+    def _toggle_fullscreen(self, _event: tk.Event | None = None) -> str:
+        self._fullscreen = not self._fullscreen
+        self._window.attributes("-fullscreen", self._fullscreen)
+        self._fullscreen_button.configure(
+            text=(
+                "退出全屏  F11"
+                if self._fullscreen
+                else "全屏查看  F11"
+            )
+        )
+        return "break"
+
+    def _handle_escape(self, _event: tk.Event) -> str:
+        if self._fullscreen:
+            self._toggle_fullscreen()
+        else:
+            self._deny()
+        return "break"
 
 

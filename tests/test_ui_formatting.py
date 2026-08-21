@@ -1,5 +1,6 @@
 """验证界面格式化、Markdown 渲染和布局计算。"""
 
+import json
 import queue
 import tkinter as tk
 import unittest
@@ -84,6 +85,28 @@ class UiFormattingTests(unittest.TestCase):
 
     def test_confirmation_previews_ignore_invalid_arguments(self) -> None:
         self.assertEqual(_confirmation_content_previews("not json"), [])
+
+    def test_confirmation_previews_render_patch_diff(self) -> None:
+        previews = _confirmation_content_previews(
+            json.dumps(
+                {
+                    "changes": [],
+                    "diff": "--- a/app.py\n+++ b/app.py\n-old\n+new\n",
+                }
+            )
+        )
+
+        self.assertEqual(
+            previews,
+            [
+                (
+                    "preview_diff",
+                    "修改差异",
+                    "--- a/app.py\n+++ b/app.py\n-old\n+new\n",
+                    "diff",
+                )
+            ],
+        )
 
     def test_adjacent_stream_events_are_coalesced_without_reordering(self) -> None:
         marker = object()

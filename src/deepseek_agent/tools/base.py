@@ -73,6 +73,14 @@ class Tool(ABC):
         """返回当前参数对应的实际影响等级。"""
         return self.effect
 
+    def confirmation_arguments_for(
+        self,
+        arguments: JsonObject,
+        raw_arguments: str,
+    ) -> str:
+        """返回确认界面需要展示的参数；工具可以附加安全预览。"""
+        return raw_arguments
+
     def execute_with_context(
         self,
         arguments: JsonObject,

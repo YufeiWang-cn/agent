@@ -51,6 +51,7 @@ def _confirmation_content_previews(
         "old_text": "原文本",
         "new_text": "新文本",
         "replacement": "替换内容",
+        "diff": "修改差异",
     }
     language_hint = _content_language_hint(arguments)
     previews: list[tuple[str, str, str, str]] = []
@@ -58,12 +59,18 @@ def _confirmation_content_previews(
         value = parsed.get(field)
         if not isinstance(value, str) or not value:
             continue
+        if field == "diff":
+            preview_language = "diff"
+        elif field == "text":
+            preview_language = "text"
+        else:
+            preview_language = language_hint
         previews.append(
             (
                 f"preview_{field}",
                 title,
                 value,
-                language_hint if field != "text" else "text",
+                preview_language,
             )
         )
     return previews[:4]

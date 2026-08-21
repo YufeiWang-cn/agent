@@ -72,6 +72,30 @@ class WorkspaceGuard:
             raise WorkspaceAccessError(f"无法读取文件：{user_path}") from error
 
     def write_text(self, user_path: str, content: str) -> tuple[Path, bool, int]:
+        path, created, encoded_content = self.prepare_text_write(
+            user_path,
+            content,
+        )
+        # 先完整写入唯一临时文件，再原子替换目标文件。
+        temporary_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        try:
+            temporary_path.write_bytes(encoded_content)
+            temporary_path.replace(path)
+        except OSError as error:
+            raise WorkspaceAccessError(f"无法写入文件：{user_path}") from error
+        finally:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return path, created, len(encoded_content)
+
+    def prepare_text_write(
+        self,
+        user_path: str,
+        content: str,
+    ) -> tuple[Path, bool, bytes]:
+        """验证一次文本写入，并返回路径、创建状态和编码结果。"""
         path = self._resolve(user_path)
         try:
             encoded_content = content.encode("utf-8")
@@ -87,19 +111,7 @@ class WorkspaceGuard:
             raise WorkspaceAccessError(f"目标文件的父目录不存在：{user_path}")
 
         created = not path.exists()
-        # 先完整写入唯一临时文件，再原子替换目标文件。
-        temporary_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-        try:
-            temporary_path.write_bytes(encoded_content)
-            temporary_path.replace(path)
-        except OSError as error:
-            raise WorkspaceAccessError(f"无法写入文件：{user_path}") from error
-        finally:
-            try:
-                temporary_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-        return path, created, len(encoded_content)
+        return path, created, encoded_content
 
     def relative_path(self, path: Path) -> str:
         relative = path.relative_to(self._root)

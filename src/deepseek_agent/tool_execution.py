@@ -148,7 +148,10 @@ class ToolExecutor:
                 try:
                     confirmation_granted = self._confirmer.confirm(
                         tool,
-                        request.arguments,
+                        tool.confirmation_arguments_for(
+                            arguments,
+                            request.arguments,
+                        ),
                     )
                 finally:
                     self._notify_confirmation_state(on_confirmation_state, False)

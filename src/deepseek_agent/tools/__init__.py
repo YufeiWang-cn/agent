@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from ..workspace import WorkspaceGuard
+from .apply_patch import ApplyPatchTool
 from .base import (
     JsonObject,
     Tool,
@@ -43,6 +44,7 @@ def build_default_registry(
                 timeout_seconds=command_timeout,
                 max_output_bytes=max_command_output,
             ),
+            ApplyPatchTool(guard),
             ReplaceTextTool(guard),
             WriteTextFileTool(guard),
         ]
@@ -50,6 +52,7 @@ def build_default_registry(
 
 
 __all__ = [
+    "ApplyPatchTool",
     "CalculatorTool",
     "DateTimeTool",
     "ListDirectoryTool",

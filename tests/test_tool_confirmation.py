@@ -1,5 +1,7 @@
 """验证工具确认策略和命令行交互行为。"""
 
+import contextlib
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -135,6 +137,23 @@ class ToolConfirmationTests(unittest.TestCase):
         confirmer = ConsoleToolConfirmer()
         with patch("builtins.input", side_effect=KeyboardInterrupt):
             self.assertFalse(confirmer.confirm(tool, "{}"))
+
+    def test_console_confirmer_displays_patch_diff_as_plain_text(self) -> None:
+        tool = RecordingTool(requires_confirmation=True)
+        confirmer = ConsoleToolConfirmer()
+        output = io.StringIO()
+        arguments = (
+            '{"changes": [], "diff": '
+            '"--- a/app.py\\n+++ b/app.py\\n-old\\n+new\\n"}'
+        )
+
+        with contextlib.redirect_stdout(output):
+            with patch("builtins.input", return_value=""):
+                self.assertFalse(confirmer.confirm(tool, arguments))
+
+        rendered = output.getvalue()
+        self.assertIn("修改差异：\n--- a/app.py\n+++ b/app.py", rendered)
+        self.assertNotIn('"diff"', rendered)
 
 
 if __name__ == "__main__":
