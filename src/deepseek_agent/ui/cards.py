@@ -6,7 +6,12 @@ from tkinter import ttk
 from tkinter.scrolledtext import ScrolledText
 from typing import Callable
 
-from ..planning import PlanStepStatus, TaskPlan
+from ..planning import (
+    PlanExecutionScope,
+    PlanKind,
+    PlanStepStatus,
+    TaskPlan,
+)
 from .editor import EditorTabs, SyntaxText
 from .formatting import (
     _content_language_hint,
@@ -1054,6 +1059,7 @@ class PlanCard(tk.Frame):
     _STATUS_STYLES = {
         PlanStepStatus.PENDING: ("○", "待处理", TEXT_SECONDARY, "#FFFFFF"),
         PlanStepStatus.IN_PROGRESS: ("●", "进行中", ACCENT, "#EEF3FF"),
+        PlanStepStatus.WAITING_USER: ("?", "等待输入", "#B45309", "#FFFBEB"),
         PlanStepStatus.COMPLETED: ("✓", "已完成", ASSISTANT_COLOR, "#F0FDF4"),
         PlanStepStatus.FAILED: ("!", "失败", DANGER, "#FEF2F2"),
         PlanStepStatus.SKIPPED: ("–", "已跳过", TEXT_SECONDARY, "#F8FAFC"),
@@ -1108,9 +1114,16 @@ class PlanCard(tk.Frame):
     def update_plan(self, plan: TaskPlan) -> None:
         """使用最新不可变快照重新绘制步骤列表。"""
         self._plan = plan
-        self._progress.configure(
-            text=f"{plan.completed_count}/{len(plan.steps)} 已完成"
+        title = self._plan_title(plan)
+        self._toggle_button.configure(
+            text=("▼  " if self._expanded else "▶  ") + title
         )
+        progress = (
+            f"共 {len(plan.steps)} 步"
+            if plan.kind is PlanKind.PROPOSAL
+            else f"{plan.completed_count}/{len(plan.steps)} 已完成"
+        )
+        self._progress.configure(text=progress)
         for child in self._body.winfo_children():
             child.destroy()
         self._step_labels.clear()
@@ -1167,13 +1180,27 @@ class PlanCard(tk.Frame):
     def toggle(self) -> None:
         """切换步骤详情的展开状态。"""
         self._expanded = not self._expanded
+        title = (
+            self._plan_title(self._plan)
+            if self._plan is not None
+            else "执行计划"
+        )
         self._toggle_button.configure(
-            text=("▼  任务计划" if self._expanded else "▶  任务计划")
+            text=("▼  " if self._expanded else "▶  ") + title
         )
         if self._expanded:
             self._body.pack(fill="x", padx=10, pady=(7, 9))
         else:
             self._body.pack_forget()
+
+    @staticmethod
+    def _plan_title(plan: TaskPlan) -> str:
+        """返回包含用途和执行范围的计划卡片标题。"""
+        if plan.kind is PlanKind.PROPOSAL:
+            return "规划方案"
+        if plan.scope is PlanExecutionScope.SINGLE_STEP:
+            return "执行计划 · 单步"
+        return "执行计划 · 连续"
 
     def _resize_text(self, _event: tk.Event | None = None) -> None:
         """根据卡片宽度调整步骤文本的换行范围。"""

@@ -567,7 +567,6 @@ class AgentApp:
         self._conversation.register_turn(prompt, select=True)
         self._conversation.append_message("您", prompt, "user")
         self._conversation.begin_live_response()
-        self._conversation.show_plan(None)
         self._assistant_open = False
         self._cancel.clear()
         self._set_busy(True)
@@ -627,8 +626,8 @@ class AgentApp:
         else:
             if outcome.status is RunStatus.STEP_LIMIT_REACHED:
                 self._events.put(("step_limit_reached", outcome))
-            elif outcome.status is RunStatus.PLAN_INCOMPLETE:
-                self._events.put(("plan_incomplete", outcome))
+            elif outcome.status is RunStatus.WAITING_USER:
+                self._events.put(("waiting_user", outcome))
             else:
                 self._events.put(("done", outcome))
 
@@ -746,15 +745,15 @@ class AgentApp:
             )
             return
 
-        if event_name == "plan_incomplete":
+        if event_name == "waiting_user":
             self._finish_assistant_line()
-            self._finish_turn("计划未完成")
+            self._finish_turn("等待输入")
             if not self._render_completed_turn():
                 self._render_history()
             self._sidebar.refresh(select_session_id=self._agent.session_id)
             self._update_header()
             self._active_prompt = None
-            self._status.set("模型已经停止，但任务计划仍有未结束的步骤。")
+            self._status.set("执行计划已暂停，请根据 Agent 的问题继续回复。")
             return
 
         if event_name == "cancelled":
@@ -872,6 +871,10 @@ class AgentApp:
     def _render_completed_turn(self) -> bool:
         rendered = self._conversation.render_completed_turn(self._agent.history())
         if rendered:
+            # 增量渲染不会经过完整历史恢复流程，因此需要显式同步顶部计划卡片。
+            self._conversation.show_plan(
+                getattr(self._agent, "current_plan", None)
+            )
             self._assistant_open = False
         return rendered
 

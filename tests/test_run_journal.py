@@ -11,6 +11,7 @@ from _path_setup import add_src_to_path
 add_src_to_path()
 
 from deepseek_agent.journal import RunJournal
+from deepseek_agent.planning import TaskPlan
 from deepseek_agent.tool_execution import (
     ToolExecutionRecord,
     ToolExecutionStart,
@@ -126,6 +127,28 @@ class RunJournalTests(unittest.TestCase):
         )
 
         self.assertEqual(self.journal.find_recovery_issues(), ())
+
+    def test_plan_updates_log_identity_and_counts_without_step_text(self) -> None:
+        plan = TaskPlan.create(
+            [
+                {"step": "读取机密项目说明", "status": "completed"},
+                {"step": "等待用户提供密钥", "status": "waiting_user"},
+            ]
+        ).with_revision(3)
+
+        self.journal.record_plan_updated("turn_test", plan)
+
+        content = self.journal.path.read_text(encoding="utf-8")
+        event = json.loads(content)
+        self.assertNotIn("读取机密项目说明", content)
+        self.assertNotIn("等待用户提供密钥", content)
+        self.assertEqual(event["event"], "plan_updated")
+        self.assertEqual(event["plan_id"], plan.id)
+        self.assertEqual(event["scope"], "entire_plan")
+        self.assertEqual(event["revision"], 3)
+        self.assertEqual(event["completed"], 1)
+        self.assertTrue(event["waiting_user"])
+        self.assertEqual(event["status_counts"]["waiting_user"], 1)
 
 
 if __name__ == "__main__":

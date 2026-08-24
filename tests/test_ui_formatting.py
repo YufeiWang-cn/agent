@@ -12,7 +12,7 @@ add_src_to_path()
 
 from deepseek_agent.config import Settings
 from deepseek_agent.memory import Session
-from deepseek_agent.planning import TaskPlan
+from deepseek_agent.planning import PlanStepStatus, TaskPlan
 from deepseek_agent.ui.cards import (
     MarkdownCodeCard,
     PlanCard,
@@ -48,6 +48,7 @@ class FakeUiAgent:
         self._session = Session.create(
             [{"role": "system", "content": "system"}]
         )
+        self.current_plan = None
         self.saved = 0
 
     @property
@@ -92,9 +93,34 @@ class UiFormattingTests(unittest.TestCase):
             root.update_idletasks()
 
             self.assertEqual(card._progress.cget("text"), "1/2 已完成")
+            self.assertIn("连续", card._toggle_button.cget("text"))
             self.assertTrue(card._body.winfo_manager())
             card.toggle()
             self.assertFalse(card._body.winfo_manager())
+
+            proposal = TaskPlan.create(
+                [
+                    {"step": "确定目标", "status": "pending"},
+                    {"step": "整理路线", "status": "pending"},
+                ],
+                kind="proposal",
+            )
+            card.update_plan(proposal)
+            self.assertEqual(card._progress.cget("text"), "共 2 步")
+            self.assertIn("规划方案", card._toggle_button.cget("text"))
+            single_step = TaskPlan.create(
+                [
+                    {"step": "读取代码", "status": "completed"},
+                    {"step": "运行测试", "status": "pending"},
+                ],
+                scope="single_step",
+            )
+            card.update_plan(single_step)
+            self.assertIn("单步", card._toggle_button.cget("text"))
+            self.assertEqual(
+                PlanCard._STATUS_STYLES[PlanStepStatus.WAITING_USER][1],
+                "等待输入",
+            )
         finally:
             root.destroy()
 
@@ -319,6 +345,57 @@ class UiFormattingTests(unittest.TestCase):
                 app._input.get("1.0", "end-1c"),
                 "请分析项目结构。",
             )
+        finally:
+            root.destroy()
+
+    def test_sending_next_turn_keeps_current_plan_visible(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk 不可用：{error}")
+        root.withdraw()
+        fake_agent = FakeUiAgent()
+        fake_agent.current_plan = TaskPlan.create(
+            [
+                {"step": "收集基础数据", "status": "pending"},
+                {"step": "制定训练安排", "status": "pending"},
+            ],
+            kind="proposal",
+        )
+        settings = Settings(
+            api_key="test",
+            base_url="https://example.invalid",
+            model="fake-model",
+            system_prompt="system",
+        )
+        try:
+            with patch(
+                "deepseek_agent.ui.tk_app.Agent",
+                return_value=fake_agent,
+            ):
+                app = AgentApp(root, settings)
+            app._input.insert("1.0", "从第一步开始")
+
+            with patch("deepseek_agent.ui.tk_app.threading.Thread") as thread:
+                app._send()
+
+            self.assertEqual(
+                app._conversation._plan_card.winfo_manager(),
+                "grid",
+            )
+            thread.return_value.start.assert_called_once_with()
+            app._conversation.show_plan(None)
+            with patch.object(
+                app._conversation,
+                "render_completed_turn",
+                return_value=True,
+            ):
+                self.assertTrue(app._render_completed_turn())
+            self.assertEqual(
+                app._conversation._plan_card.winfo_manager(),
+                "grid",
+            )
+            app._finish_turn("就绪")
         finally:
             root.destroy()
 

@@ -11,6 +11,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from .models import ToolCallRequest
+from .planning import PlanStepStatus, TaskPlan
 from .tool_execution import ToolExecutionRecord, ToolExecutionStart
 
 
@@ -153,6 +154,28 @@ class RunJournal:
             can_retry_safely=record.can_retry_safely,
             duration_ms=round(record.duration_seconds * 1000, 3),
             error_present=record.error_message is not None,
+        )
+
+    def record_plan_updated(self, turn_id: str, plan: TaskPlan) -> None:
+        """记录不包含步骤正文的计划版本和状态统计。"""
+        status_counts = {
+            status.value: sum(
+                step.status is status for step in plan.steps
+            )
+            for status in PlanStepStatus
+        }
+        self._append(
+            "plan_updated",
+            turn_id=turn_id,
+            plan_id=plan.id,
+            kind=plan.kind.value,
+            scope=plan.scope.value,
+            revision=plan.revision,
+            completed=plan.completed_count,
+            total=len(plan.steps),
+            terminal=plan.terminal,
+            waiting_user=plan.waiting_for_user,
+            status_counts=status_counts,
         )
 
     def record_turn_finished(

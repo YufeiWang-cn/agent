@@ -6,7 +6,12 @@ from .conversation import Message
 from .memory import ProjectStoreError, SessionStoreError
 from .models import ToolCallRequest
 from .observability import build_file_logger
-from .planning import PlanStepStatus, TaskPlan
+from .planning import (
+    PlanExecutionScope,
+    PlanKind,
+    PlanStepStatus,
+    TaskPlan,
+)
 from .runtime import AgentEvent, AgentEventType, RunStatus
 
 
@@ -128,8 +133,8 @@ class CliApplication:
             )
             if started_output:
                 print()
-            if outcome.status is RunStatus.PLAN_INCOMPLETE:
-                print("[任务未完成] 当前计划仍有待处理或进行中的步骤。")
+            if outcome.status is RunStatus.WAITING_USER:
+                print("[等待输入] 当前计划已暂停，请根据上方问题继续回复。")
         except Exception as error:
             if started_output:
                 print()
@@ -240,14 +245,26 @@ class CliApplication:
         symbols = {
             PlanStepStatus.PENDING: "[ ]",
             PlanStepStatus.IN_PROGRESS: "[>]",
+            PlanStepStatus.WAITING_USER: "[?]",
             PlanStepStatus.COMPLETED: "[x]",
             PlanStepStatus.FAILED: "[!]",
             PlanStepStatus.SKIPPED: "[-]",
         }
-        print(
-            f"\n[任务计划 v{plan.revision}] "
-            f"{plan.completed_count}/{len(plan.steps)} 已完成"
+        if plan.kind is PlanKind.PROPOSAL:
+            plan_title = "规划方案"
+        else:
+            scope_text = (
+                "单步"
+                if plan.scope is PlanExecutionScope.SINGLE_STEP
+                else "连续"
+            )
+            plan_title = f"执行计划 · {scope_text}"
+        progress = (
+            f"共 {len(plan.steps)} 步"
+            if plan.kind is PlanKind.PROPOSAL
+            else f"{plan.completed_count}/{len(plan.steps)} 已完成"
         )
+        print(f"\n[{plan_title} v{plan.revision}] {progress}")
         if plan.explanation:
             print(f"说明：{plan.explanation}")
         for index, step in enumerate(plan.steps, start=1):

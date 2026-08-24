@@ -12,11 +12,11 @@ class RunStatus(str, Enum):
     IDLE = "idle"
     RUNNING = "running"
     WAITING_APPROVAL = "waiting_approval"
+    WAITING_USER = "waiting_user"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
     FAILED = "failed"
     STEP_LIMIT_REACHED = "step_limit_reached"
-    PLAN_INCOMPLETE = "plan_incomplete"
 
     @property
     def succeeded(self) -> bool:
@@ -33,10 +33,10 @@ class RunStatus(str, Enum):
         """返回当前状态是否表示一轮任务已经结束。"""
         return self in {
             RunStatus.COMPLETED,
+            RunStatus.WAITING_USER,
             RunStatus.CANCELLED,
             RunStatus.FAILED,
             RunStatus.STEP_LIMIT_REACHED,
-            RunStatus.PLAN_INCOMPLETE,
         }
 
 

@@ -3,6 +3,7 @@
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Iterable
+from uuid import uuid4
 
 
 MIN_PLAN_STEPS = 2
@@ -11,11 +12,26 @@ MAX_PLAN_STEP_LENGTH = 160
 MAX_PLAN_EXPLANATION_LENGTH = 500
 
 
+class PlanKind(str, Enum):
+    """区分用于实际执行的计划和作为回答交付的规划方案。"""
+
+    EXECUTION = "execution"
+    PROPOSAL = "proposal"
+
+
+class PlanExecutionScope(str, Enum):
+    """表示执行计划在一轮中推进一个步骤还是持续推进全部步骤。"""
+
+    SINGLE_STEP = "single_step"
+    ENTIRE_PLAN = "entire_plan"
+
+
 class PlanStepStatus(str, Enum):
     """表示一个计划步骤当前所处的公开执行状态。"""
 
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
+    WAITING_USER = "waiting_user"
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
@@ -44,19 +60,25 @@ class PlanStep:
 
 @dataclass(frozen=True, slots=True)
 class TaskPlan:
-    """保存当前任务的完整计划快照和递增版本号。"""
+    """保存具有稳定身份、明确用途和递增版本号的计划快照。"""
 
     steps: tuple[PlanStep, ...]
+    kind: PlanKind = PlanKind.EXECUTION
+    scope: PlanExecutionScope = PlanExecutionScope.ENTIRE_PLAN
     explanation: str | None = None
     revision: int = 1
+    id: str = ""
 
     @classmethod
     def create(
         cls,
         items: Iterable[dict[str, Any]],
         *,
+        kind: PlanKind | str = PlanKind.EXECUTION,
+        scope: PlanExecutionScope | str = PlanExecutionScope.ENTIRE_PLAN,
         explanation: str | None = None,
         revision: int = 1,
+        plan_id: str | None = None,
     ) -> "TaskPlan":
         """从工具参数创建经过完整结构校验的计划。"""
         raw_items = list(items)
@@ -66,6 +88,15 @@ class TaskPlan:
             )
         if not isinstance(revision, int) or revision < 1:
             raise ValueError("计划版本号必须是正整数。")
+        try:
+            normalized_kind = PlanKind(kind)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"无效的计划用途：{kind}") from error
+        try:
+            normalized_scope = PlanExecutionScope(scope)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"无效的执行范围：{scope}") from error
+        normalized_id = _normalize_plan_id(plan_id)
 
         normalized_explanation = _normalize_explanation(explanation)
         steps: list[PlanStep] = []
@@ -92,11 +123,24 @@ class TaskPlan:
             steps.append(PlanStep(normalized_text, normalized_status))
 
         active_count = sum(
-            step.status is PlanStepStatus.IN_PROGRESS for step in steps
+            step.status
+            in {PlanStepStatus.IN_PROGRESS, PlanStepStatus.WAITING_USER}
+            for step in steps
         )
         if active_count > 1:
-            raise ValueError("同一时间最多只能有一个进行中的计划步骤。")
-        return cls(tuple(steps), normalized_explanation, revision)
+            raise ValueError("同一时间最多只能有一个进行中或等待用户的步骤。")
+        if normalized_kind is PlanKind.PROPOSAL and any(
+            step.status is not PlanStepStatus.PENDING for step in steps
+        ):
+            raise ValueError("规划方案中的步骤必须全部为 pending。")
+        return cls(
+            tuple(steps),
+            normalized_kind,
+            normalized_scope,
+            normalized_explanation,
+            revision,
+            normalized_id,
+        )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TaskPlan":
@@ -108,13 +152,19 @@ class TaskPlan:
             raise ValueError("会话计划缺少步骤列表。")
         return cls.create(
             steps,
+            kind=data.get("kind", PlanKind.EXECUTION.value),
+            scope=data.get("scope", PlanExecutionScope.ENTIRE_PLAN.value),
             explanation=data.get("explanation"),
             revision=data.get("revision", 1),
+            plan_id=data.get("id"),
         )
 
     def to_dict(self) -> dict[str, Any]:
         """返回可直接写入会话 JSON 的计划快照。"""
         return {
+            "id": self.id,
+            "kind": self.kind.value,
+            "scope": self.scope.value,
             "revision": self.revision,
             "explanation": self.explanation,
             "steps": [step.to_dict() for step in self.steps],
@@ -126,6 +176,14 @@ class TaskPlan:
             raise ValueError("计划版本号必须是正整数。")
         return replace(self, revision=revision)
 
+    def with_identity(self, plan_id: str, revision: int) -> "TaskPlan":
+        """返回使用指定稳定身份和版本号的新计划快照。"""
+        if not isinstance(plan_id, str) or not plan_id.strip():
+            raise ValueError("计划标识必须是非空字符串。")
+        if revision < 1:
+            raise ValueError("计划版本号必须是正整数。")
+        return replace(self, id=plan_id.strip(), revision=revision)
+
     @property
     def completed_count(self) -> int:
         """返回已经成功完成的步骤数量。"""
@@ -135,8 +193,17 @@ class TaskPlan:
 
     @property
     def terminal(self) -> bool:
-        """返回计划中的所有步骤是否都已经结束。"""
-        return all(step.status.terminal for step in self.steps)
+        """返回规划是否已交付，或执行计划中的步骤是否都已结束。"""
+        return self.kind is PlanKind.PROPOSAL or all(
+            step.status.terminal for step in self.steps
+        )
+
+    @property
+    def waiting_for_user(self) -> bool:
+        """返回执行计划是否已经明确暂停并等待用户输入。"""
+        return self.kind is PlanKind.EXECUTION and any(
+            step.status is PlanStepStatus.WAITING_USER for step in self.steps
+        )
 
 
 def validate_plan_transition(
@@ -146,6 +213,8 @@ def validate_plan_transition(
     """校验同一计划的终态不可回退，并约束重新规划必须说明原因。"""
     if previous is None:
         return
+    if previous.kind is not current.kind:
+        raise ValueError("更新同一计划时不能改变计划用途。")
 
     previous_shape = tuple(step.step for step in previous.steps)
     current_shape = tuple(step.step for step in current.steps)
@@ -182,9 +251,20 @@ def _normalize_explanation(explanation: str | None) -> str | None:
     return normalized
 
 
+def _normalize_plan_id(plan_id: str | None) -> str:
+    """校验持久化标识，并为新计划生成随机标识。"""
+    if plan_id is None:
+        return uuid4().hex
+    if not isinstance(plan_id, str) or not plan_id.strip():
+        raise ValueError("计划标识必须是非空字符串。")
+    return plan_id.strip()
+
+
 __all__ = [
     "MAX_PLAN_STEPS",
     "MIN_PLAN_STEPS",
+    "PlanExecutionScope",
+    "PlanKind",
     "PlanStep",
     "PlanStepStatus",
     "TaskPlan",
