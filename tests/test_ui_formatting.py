@@ -12,7 +12,13 @@ add_src_to_path()
 
 from deepseek_agent.config import Settings
 from deepseek_agent.memory import Session
-from deepseek_agent.ui.cards import MarkdownCodeCard, ToolCallCard, UserMessageCard
+from deepseek_agent.planning import TaskPlan
+from deepseek_agent.ui.cards import (
+    MarkdownCodeCard,
+    PlanCard,
+    ToolCallCard,
+    UserMessageCard,
+)
 from deepseek_agent.ui.conversation_view import (
     ConversationView,
     _messages_after_last_user,
@@ -66,6 +72,32 @@ class FakeUiAgent:
 
 
 class UiFormattingTests(unittest.TestCase):
+    def test_plan_card_renders_progress_and_can_collapse(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk 不可用：{error}")
+        root.withdraw()
+        try:
+            plan = TaskPlan.create(
+                [
+                    {"step": "读取代码", "status": "completed"},
+                    {"step": "运行测试", "status": "in_progress"},
+                ]
+            )
+            card = PlanCard(root)
+            card.pack(fill="x")
+
+            card.update_plan(plan)
+            root.update_idletasks()
+
+            self.assertEqual(card._progress.cget("text"), "1/2 已完成")
+            self.assertTrue(card._body.winfo_manager())
+            card.toggle()
+            self.assertFalse(card._body.winfo_manager())
+        finally:
+            root.destroy()
+
     def test_confirmation_previews_extract_code_using_path_language(self) -> None:
         previews = _confirmation_content_previews(
             '{"path":"src/app.py","content":"def run():\\n    return 1"}'

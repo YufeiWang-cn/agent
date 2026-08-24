@@ -11,7 +11,7 @@ from typing import Any
 from ..agent import Agent, AgentCancelledError
 from ..config import Settings
 from ..models import ToolCallRequest
-from ..runtime import RunStatus, TurnOutcome
+from ..runtime import AgentEvent, AgentEventType, RunStatus, TurnOutcome
 from .confirmation import (
     ConfirmationRequest,
     TkToolConfirmer,
@@ -567,6 +567,7 @@ class AgentApp:
         self._conversation.register_turn(prompt, select=True)
         self._conversation.append_message("您", prompt, "user")
         self._conversation.begin_live_response()
+        self._conversation.show_plan(None)
         self._assistant_open = False
         self._cancel.clear()
         self._set_busy(True)
@@ -590,6 +591,7 @@ class AgentApp:
                 on_tool_result=lambda request, result: self._events.put(
                     ("tool_result", (request, result))
                 ),
+                on_event=self._queue_runtime_event,
                 should_cancel=self._cancel.is_set,
             )
         except AgentCancelledError as error:
@@ -625,8 +627,15 @@ class AgentApp:
         else:
             if outcome.status is RunStatus.STEP_LIMIT_REACHED:
                 self._events.put(("step_limit_reached", outcome))
+            elif outcome.status is RunStatus.PLAN_INCOMPLETE:
+                self._events.put(("plan_incomplete", outcome))
             else:
                 self._events.put(("done", outcome))
+
+    def _queue_runtime_event(self, event: AgentEvent) -> None:
+        """把需要 GUI 展示的统一运行事件转发到 Tk 主线程。"""
+        if event.type is AgentEventType.PLAN_UPDATED:
+            self._events.put(("plan_updated", event.plan))
 
     def _stop(self) -> None:
         if self._is_busy():
@@ -696,6 +705,10 @@ class AgentApp:
             self._set_activity_phase("继续生成")
             return
 
+        if event_name == "plan_updated":
+            self._conversation.show_plan(payload)
+            return
+
         if event_name == "confirmation":
             self._set_activity_phase("等待确认")
             self._show_confirmation(payload)
@@ -731,6 +744,17 @@ class AgentApp:
             self._status.set(
                 f"已达到执行步数上限，共执行 {outcome.steps_completed} 步。"
             )
+            return
+
+        if event_name == "plan_incomplete":
+            self._finish_assistant_line()
+            self._finish_turn("计划未完成")
+            if not self._render_completed_turn():
+                self._render_history()
+            self._sidebar.refresh(select_session_id=self._agent.session_id)
+            self._update_header()
+            self._active_prompt = None
+            self._status.set("模型已经停止，但任务计划仍有未结束的步骤。")
             return
 
         if event_name == "cancelled":
@@ -853,6 +877,8 @@ class AgentApp:
 
     def _render_history(self) -> None:
         self._conversation.render_history(self._agent.history())
+        # 自定义旧 Agent 可以尚未提供计划属性，此时保持计划区域隐藏。
+        self._conversation.show_plan(getattr(self._agent, "current_plan", None))
         self._assistant_open = False
 
     def _use_prompt_suggestion(self, prompt: str) -> None:

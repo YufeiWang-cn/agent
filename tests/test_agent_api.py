@@ -2,6 +2,7 @@
 
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -179,7 +180,11 @@ class AgentApiTests(unittest.TestCase):
             for index in range(5)
         ]
         model = CallbackModel(requests)
-        agent = Agent(self.settings, model=model, session_store=self.store)
+        agent = Agent(
+            replace(self.settings, max_agent_steps=5),
+            model=model,
+            session_store=self.store,
+        )
 
         outcome = agent.chat("持续调用工具")
 

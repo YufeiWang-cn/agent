@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from ..models import ToolCallRequest
+from ..planning import TaskPlan
 from ..tool_execution import ToolExecutionRecord
 
 
@@ -14,6 +15,7 @@ class AgentEventType(str, Enum):
     TEXT_DELTA = "text_delta"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
+    PLAN_UPDATED = "plan_updated"
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +27,7 @@ class AgentEvent:
     tool_call: ToolCallRequest | None = None
     tool_result: str | None = None
     tool_record: ToolExecutionRecord | None = None
+    plan: TaskPlan | None = None
 
     @classmethod
     def turn_started(cls) -> "AgentEvent":
@@ -54,3 +57,8 @@ class AgentEvent:
             tool_result=record.model_result,
             tool_record=record,
         )
+
+    @classmethod
+    def plan_updated(cls, plan: TaskPlan | None) -> "AgentEvent":
+        """创建表示当前公开任务计划已经变化的事件。"""
+        return cls(type=AgentEventType.PLAN_UPDATED, plan=plan)

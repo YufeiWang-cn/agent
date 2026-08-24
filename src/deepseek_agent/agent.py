@@ -26,12 +26,12 @@ from .memory import (
 from .models import ChatModel, DeepSeekModel, TextDelta, ToolCallRequest
 from .observability import RuntimeMetrics
 from .permissions import ConsoleToolConfirmer, ToolConfirmer
+from .planning import TaskPlan, validate_plan_transition
 from .reliability import RetryPolicy, RetryingChatModel
 from .runtime import AgentEvent, RunStatus, TurnOutcome
 from .tools import ToolEffect, ToolRegistry, build_default_registry
 
 
-MAX_AGENT_STEPS = 5
 DEFAULT_SESSION_DIRECTORY = PROJECT_ROOT / "data" / "sessions"
 DEFAULT_PROJECT_FILE = PROJECT_ROOT / "data" / "projects.json"
 DEFAULT_RUN_DIRECTORY = PROJECT_ROOT / "data" / "runs"
@@ -95,6 +95,9 @@ class Agent:
             self._metrics,
             logger=logger,
         )
+        # 计划状态独立于模型消息，避免把界面数据混入 API 对话协议。
+        self._current_plan: TaskPlan | None = None
+        self._max_agent_steps = settings.max_agent_steps
         self._tools = (
             tools
             if tools is not None
@@ -103,6 +106,7 @@ class Agent:
                 settings.max_file_size,
                 settings.command_timeout,
                 settings.max_command_output,
+                plan_updater=self._commit_plan,
             )
         )
         self._conversation = Conversation(settings.system_prompt)
@@ -127,6 +131,7 @@ class Agent:
         )
         self._tool_executor = ToolExecutor(self._tools, self._confirmer)
         self._session = self._restore_latest_session()
+        self._current_plan = self._session.plan
         # 回滚结果状态用于记录最近一次中断所采用的处理方式。
         # 界面根据该状态决定删除临时轮次还是重新渲染工具历史。
         self._last_turn_history_preserved = False
@@ -160,6 +165,9 @@ class Agent:
         # 回滚只删除本轮新增消息，不影响旧会话历史。
         checkpoint = len(self._conversation)
         self._begin_turn()
+        plan_checkpoint = self._current_plan
+        # 每个新问题从空计划开始，复杂任务再由模型显式创建新计划。
+        self._current_plan = None
         self._current_turn_id = uuid4().hex
         self._record_turn_started_safely(self._current_turn_id)
         # 每轮开始先清空上轮的结果，避免界面误用旧的“已保留”状态。
@@ -172,7 +180,9 @@ class Agent:
 
         try:
             self._emit_event(on_event, AgentEvent.turn_started())
-            for _step in range(MAX_AGENT_STEPS):
+            if plan_checkpoint is not None:
+                self._emit_event(on_event, AgentEvent.plan_updated(None))
+            for _step in range(self._max_agent_steps):
                 self._raise_if_cancelled(should_cancel)
                 answer_parts: list[str] = []
                 tool_requests: list[ToolCallRequest] = []
@@ -209,8 +219,14 @@ class Agent:
                             on_text(answer)
                     self._conversation.add_assistant(answer)
                     self._save_completed_turn(checkpoint)
+                    final_status = (
+                        RunStatus.PLAN_INCOMPLETE
+                        if self._current_plan is not None
+                        and not self._current_plan.terminal
+                        else RunStatus.COMPLETED
+                    )
                     return self._finish_turn_outcome(
-                        status=RunStatus.COMPLETED,
+                        status=final_status,
                         final_text=answer,
                         steps_completed=steps_completed,
                         checkpoint=checkpoint,
@@ -229,7 +245,9 @@ class Agent:
                     should_cancel=should_cancel,
                 )
 
-            message = f"Agent 已达到最大执行步数 {MAX_AGENT_STEPS}，任务已停止。"
+            message = (
+                f"Agent 已达到最大执行步数 {self._max_agent_steps}，任务已停止。"
+            )
             self._conversation.add_assistant(message)
             self._save_completed_turn(checkpoint)
             self._emit_event(on_event, AgentEvent.text_delta(message))
@@ -260,6 +278,7 @@ class Agent:
                 # 回滚策略二适用于没有任何工具完成的情况。
                 # 此时本轮没有已知外部副作用，因此可以安全地截断到检查点。
                 self._conversation.truncate(checkpoint)
+                self._current_plan = plan_checkpoint
             outcome = self._finish_turn_outcome(
                 status=RunStatus.CANCELLED,
                 final_text=self._latest_assistant_text(checkpoint),
@@ -301,6 +320,7 @@ class Agent:
             else:
                 # 这里只回滚 Conversation，不会撤销文件系统或其他外部操作。
                 self._conversation.truncate(checkpoint)
+                self._current_plan = plan_checkpoint
             outcome = self._finish_turn_outcome(
                 status=RunStatus.FAILED,
                 final_text=self._latest_assistant_text(checkpoint),
@@ -379,6 +399,12 @@ class Agent:
                 on_event,
                 AgentEvent.tool_call_completed(request, record),
             )
+            if request.name == "update_plan" and record.status.succeeded:
+                # 计划事件必须在工具结果入历史后发送，确保回调失败时仍可恢复。
+                self._emit_event(
+                    on_event,
+                    AgentEvent.plan_updated(self._current_plan),
+                )
             # 界面回调发生异常时，已写入的工具结果仍可避免误回滚。
             if on_tool_result is not None:
                 on_tool_result(request, record.model_result)
@@ -523,6 +549,16 @@ class Agent:
                 raise RuntimeError("当前 Agent 已经有一轮任务正在执行。")
             self._run_status = RunStatus.RUNNING
 
+    def _commit_plan(self, plan: TaskPlan) -> TaskPlan:
+        """校验并提交一次计划更新，同时分配单调递增的版本号。"""
+        validate_plan_transition(self._current_plan, plan)
+        revision = (
+            1 if self._current_plan is None else self._current_plan.revision + 1
+        )
+        committed = plan.with_revision(revision)
+        self._current_plan = committed
+        return committed
+
     def _set_run_status(self, status: RunStatus) -> None:
         """在线程锁保护下更新当前轮次的运行状态。"""
         with self._run_status_lock:
@@ -656,6 +692,16 @@ class Agent:
         """返回发送给模型的消息 Token 预算。"""
         return self._context_manager.max_tokens
 
+    @property
+    def max_agent_steps(self) -> int:
+        """返回单轮允许的最大模型执行步数。"""
+        return self._max_agent_steps
+
+    @property
+    def current_plan(self) -> TaskPlan | None:
+        """返回当前会话最近一次公开任务计划快照。"""
+        return self._current_plan
+
     def context_window(self) -> ContextWindow:
         """返回根据当前完整历史计算得到的上下文窗口。"""
         return self._context_manager.prepare(self._conversation.messages)
@@ -746,12 +792,14 @@ class Agent:
         # 当前 Session 和 Conversation 在磁盘保存成功前保持不变。
         candidate = self._copy_session(self._session)
         candidate.update_messages(cleared_messages)
+        candidate.update_plan(None)
         # 持久化阶段发生保存失败时会直接抛出异常。
         # 保存失败后不会执行内存提交，因此不需要恢复当前 Conversation。
         self._session_store.save(candidate)
         # 提交阶段：只有候选状态成功落盘后，才同步更新两个内存状态对象。
         self._conversation.restore(cleared_messages)
         self._session = candidate
+        self._current_plan = None
 
     def load_session(self, session_id: str) -> Session:
         """先保存当前会话，再加载并提交目标会话。"""
@@ -760,6 +808,7 @@ class Agent:
         # 恢复操作会先校验消息结构，校验成功后才替换 ``Conversation``。
         self._conversation.restore(session.messages)
         self._session = session
+        self._current_plan = session.plan
         return session
 
     def delete_session(
@@ -791,6 +840,7 @@ class Agent:
         # 提交内存状态：旧会话确认删除后，才正式切换到替代会话。
         self._conversation.restore(replacement.messages)
         self._session = replacement
+        self._current_plan = replacement.plan
         return deleted_id
 
     def rename_session(self, session_id: str, title: str) -> Session:
@@ -835,6 +885,7 @@ class Agent:
         # 因此后续内存切换不会造成界面进入一个尚未持久化的新会话。
         self._conversation.restore(session.messages)
         self._session = session
+        self._current_plan = session.plan
         return session
 
     def _create_new_session(self, project_id: str | None = None) -> Session:
@@ -875,6 +926,7 @@ class Agent:
                 compact_title = " ".join(str(first_user_message).split())
                 candidate.title = compact_title[:30]
         candidate.update_messages(self._conversation.messages)
+        candidate.update_plan(self._current_plan)
         # 持久化操作是候选状态的提交边界。
         # 保存操作抛出异常时不会替换内存对象，当前 ``Session`` 会保持原状。
         # 保存成功后才会把候选对象设置为新的当前 Session。

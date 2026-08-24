@@ -17,6 +17,7 @@ DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_MAX_FILE_SIZE = 100_000
 DEFAULT_COMMAND_TIMEOUT = 120.0
 DEFAULT_MAX_COMMAND_OUTPUT = 50_000
+DEFAULT_MAX_AGENT_STEPS = 12
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +36,7 @@ class Settings:
     max_file_size: int = DEFAULT_MAX_FILE_SIZE
     command_timeout: float = DEFAULT_COMMAND_TIMEOUT
     max_command_output: int = DEFAULT_MAX_COMMAND_OUTPUT
+    max_agent_steps: int = DEFAULT_MAX_AGENT_STEPS
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -133,6 +135,18 @@ class Settings:
         if max_command_output <= 0:
             raise RuntimeError("AGENT_MAX_COMMAND_OUTPUT 必须是正整数。")
 
+        try:
+            max_agent_steps = int(
+                os.getenv(
+                    "AGENT_MAX_STEPS",
+                    str(DEFAULT_MAX_AGENT_STEPS),
+                ).strip()
+            )
+        except ValueError as error:
+            raise RuntimeError("AGENT_MAX_STEPS 必须是正整数。") from error
+        if max_agent_steps <= 0:
+            raise RuntimeError("AGENT_MAX_STEPS 必须是正整数。")
+
         return cls(
             api_key=api_key,
             base_url=os.getenv(
@@ -149,4 +163,5 @@ class Settings:
             max_file_size=max_file_size,
             command_timeout=command_timeout,
             max_command_output=max_command_output,
+            max_agent_steps=max_agent_steps,
         )

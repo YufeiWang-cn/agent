@@ -6,6 +6,8 @@ from .conversation import Message
 from .memory import ProjectStoreError, SessionStoreError
 from .models import ToolCallRequest
 from .observability import build_file_logger
+from .planning import PlanStepStatus, TaskPlan
+from .runtime import AgentEvent, AgentEventType, RunStatus
 
 
 EXIT_COMMANDS = {"/exit", "exit", "quit", "q", "退出"}
@@ -75,6 +77,9 @@ class CliApplication:
         if command == "/stats":
             self._print_stats()
             return True
+        if command == "/plan":
+            self._print_plan(self._agent.current_plan)
+            return True
         if command == "/model":
             print(f"当前模型：{self._agent.model_name}")
             return True
@@ -106,15 +111,25 @@ class CliApplication:
         def print_tool_result(_request: ToolCallRequest, result: str) -> None:
             print(f"[工具结果] {result}")
 
+        def print_runtime_event(event: AgentEvent) -> None:
+            if (
+                event.type is AgentEventType.PLAN_UPDATED
+                and event.plan is not None
+            ):
+                self._print_plan(event.plan)
+
         try:
-            self._agent.chat(
+            outcome = self._agent.chat(
                 prompt,
                 on_text=print_text,
                 on_tool_call=print_tool_call,
                 on_tool_result=print_tool_result,
+                on_event=print_runtime_event,
             )
             if started_output:
                 print()
+            if outcome.status is RunStatus.PLAN_INCOMPLETE:
+                print("[任务未完成] 当前计划仍有待处理或进行中的步骤。")
         except Exception as error:
             if started_output:
                 print()
@@ -210,10 +225,33 @@ class CliApplication:
             "  /history      查看当前对话历史\n"
             "  /context      查看上下文预算和裁剪情况\n"
             "  /stats        查看本次运行的模型调用统计\n"
+            "  /plan         查看当前任务计划\n"
             "  /model        查看当前模型\n"
             "  /tools        查看可用工具\n"
             "  /exit         退出程序"
         )
+
+    @staticmethod
+    def _print_plan(plan: TaskPlan | None) -> None:
+        """以适合终端阅读的形式打印当前任务计划。"""
+        if plan is None:
+            print("当前没有任务计划。")
+            return
+        symbols = {
+            PlanStepStatus.PENDING: "[ ]",
+            PlanStepStatus.IN_PROGRESS: "[>]",
+            PlanStepStatus.COMPLETED: "[x]",
+            PlanStepStatus.FAILED: "[!]",
+            PlanStepStatus.SKIPPED: "[-]",
+        }
+        print(
+            f"\n[任务计划 v{plan.revision}] "
+            f"{plan.completed_count}/{len(plan.steps)} 已完成"
+        )
+        if plan.explanation:
+            print(f"说明：{plan.explanation}")
+        for index, step in enumerate(plan.steps, start=1):
+            print(f"  {symbols[step.status]} {index}. {step.step}")
 
     def _print_history(self) -> None:
         history = self._agent.history()

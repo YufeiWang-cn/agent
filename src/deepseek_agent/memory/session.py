@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from ..conversation import Message
+from ..planning import TaskPlan
 
 
 def _now() -> str:
@@ -23,6 +24,7 @@ class Session:
     updated_at: str
     project_id: str | None = None
     messages: list[Message] = field(default_factory=list)
+    plan: TaskPlan | None = None
 
     @classmethod
     def create(
@@ -43,6 +45,11 @@ class Session:
 
     def update_messages(self, messages: list[Message]) -> None:
         self.messages = deepcopy(messages)
+        self.updated_at = _now()
+
+    def update_plan(self, plan: TaskPlan | None) -> None:
+        """替换当前会话保存的最新任务计划快照。"""
+        self.plan = plan
         self.updated_at = _now()
 
     def rename(self, title: str) -> None:
@@ -66,6 +73,7 @@ class Session:
             "updated_at": self.updated_at,
             "project_id": self.project_id,
             "messages": deepcopy(self.messages),
+            "plan": self.plan.to_dict() if self.plan is not None else None,
         }
 
     @classmethod
@@ -77,6 +85,7 @@ class Session:
             raise ValueError("会话基本信息格式错误")
         messages = data["messages"]
         project_id = data.get("project_id")
+        raw_plan = data.get("plan")
         if project_id is not None and not isinstance(project_id, str):
             raise ValueError("会话所属项目格式错误")
         if not isinstance(messages, list) or not all(
@@ -84,6 +93,9 @@ class Session:
             for message in messages
         ):
             raise ValueError("会话消息格式错误")
+        if raw_plan is not None and not isinstance(raw_plan, dict):
+            raise ValueError("会话计划格式错误")
+        plan = TaskPlan.from_dict(raw_plan) if raw_plan is not None else None
         return cls(
             id=data["id"],
             title=data["title"],
@@ -91,4 +103,5 @@ class Session:
             updated_at=data["updated_at"],
             project_id=project_id,
             messages=deepcopy(messages),
+            plan=plan,
         )

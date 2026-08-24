@@ -5,10 +5,12 @@ from tkinter import ttk
 from tkinter.scrolledtext import ScrolledText
 from typing import Any, Callable
 
+from ..planning import TaskPlan
 from .cards import (
     ConversationRail,
     MarkdownCodeCard,
     MarkdownTableCard,
+    PlanCard,
     ToolCallCard,
     UserMessageCard,
 )
@@ -74,7 +76,10 @@ class ConversationView(ttk.Frame):
         self._empty_state_frame: tk.Frame | None = None
         self._disposed = False
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+        self._plan_card = PlanCard(self)
+        self._plan_card.grid(row=0, column=0, sticky="ew", pady=(0, 7))
+        self._plan_card.grid_remove()
         self._build_chat(self)
 
     @property
@@ -166,6 +171,14 @@ class ConversationView(ttk.Frame):
     ) -> None:
         self._complete_tool_card(tool_call_id, name, arguments, result)
 
+    def show_plan(self, plan: TaskPlan | None) -> None:
+        """显示当前计划快照，传入空值时隐藏计划区域。"""
+        if plan is None:
+            self._plan_card.grid_remove()
+            return
+        self._plan_card.update_plan(plan)
+        self._plan_card.grid()
+
     def render_completed_turn(self, messages: list[dict[str, Any]]) -> bool:
         return self._render_completed_turn(messages)
 
@@ -197,7 +210,7 @@ class ConversationView(ttk.Frame):
     def _build_chat(self, main: ttk.Frame) -> None:
         card = ttk.Frame(main, style="Card.TFrame", padding=1)
         self._chat_card = card
-        card.grid(row=0, column=0, sticky="nsew")
+        card.grid(row=1, column=0, sticky="nsew")
         card.columnconfigure(0, weight=1)
         card.rowconfigure(0, weight=1)
         self._chat_view = ScrolledText(
