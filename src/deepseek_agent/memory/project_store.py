@@ -59,8 +59,7 @@ class JsonProjectStore:
         except ValueError as error:
             raise ProjectStoreError(str(error)) from error
         if any(
-            item.id != current.id
-            and item.name.casefold() == renamed.name.casefold()
+            item.id != current.id and item.name.casefold() == renamed.name.casefold()
             for item in projects
         ):
             raise ProjectStoreError(f"项目名称已存在：{renamed.name}")

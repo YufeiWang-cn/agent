@@ -117,10 +117,7 @@ class CliApplication:
             print(f"[工具结果] {result}")
 
         def print_runtime_event(event: AgentEvent) -> None:
-            if (
-                event.type is AgentEventType.PLAN_UPDATED
-                and event.plan is not None
-            ):
+            if event.type is AgentEventType.PLAN_UPDATED and event.plan is not None:
                 self._print_plan(event.plan)
 
         try:

@@ -57,7 +57,7 @@ CONFIRMED_GIT_COMMANDS = frozenset(
         "push",
     }
 )
-# 高破坏性命令暂不采用“确认后放行”，因为一次误确认就可能永久丢失改动。
+# 高破坏性命令不会在确认后放行，因为一次误确认就可能永久丢失改动。
 FORBIDDEN_GIT_COMMANDS = frozenset({"clean", "reset"})
 # 部分看似只读的子命令可以借助这些选项写文件、切换仓库或启动外部辅助程序。
 # 因此，不能只根据子命令名称判断安全性。
@@ -224,15 +224,16 @@ class RunCommandTool(Tool):
                 + "、".join(sorted(str(key) for key in unexpected_keys))
             )
         raw_command = arguments.get("command")
-        if (
-            not isinstance(raw_command, list)
-            or not raw_command
-            or len(raw_command) > MAX_COMMAND_ARGUMENTS
-            or not all(isinstance(item, str) and item for item in raw_command)
-        ):
+        if not isinstance(raw_command, list) or not raw_command:
             raise ToolExecutionError(
                 f"command 必须是包含 1 到 {MAX_COMMAND_ARGUMENTS} 个非空字符串的数组。"
             )
+        if len(raw_command) > MAX_COMMAND_ARGUMENTS:
+            raise ToolExecutionError(
+                f"command 最多包含 {MAX_COMMAND_ARGUMENTS} 个字符串。"
+            )
+        if not all(isinstance(item, str) and item for item in raw_command):
+            raise ToolExecutionError("command 中的每一项都必须是非空字符串。")
         if any(
             len(item) > MAX_ARGUMENT_LENGTH or "\x00" in item
             for item in raw_command
@@ -240,7 +241,7 @@ class RunCommandTool(Tool):
             raise ToolExecutionError("命令参数过长或包含空字符。")
         if any(item in SHELL_OPERATORS for item in raw_command):
             raise ToolExecutionError("不支持 Shell 管道、重定向或命令拼接。")
-        # 这里执行命令行层的第一道路径过滤。
+        # 这里执行命令行层的第一道路径检查。
         # 实际 cwd、脚本和仓库根目录稍后还会通过 WorkspaceGuard 校验真实路径。
         self._reject_outside_path_tokens(raw_command[1:])
 
@@ -278,7 +279,7 @@ class RunCommandTool(Tool):
             raise ToolExecutionError("git 命令包含可能绕过工作区或写入文件的选项。")
         subcommand = command[1].lower()
         if subcommand in FORBIDDEN_GIT_COMMANDS:
-            raise ToolExecutionError(f"第一版禁止执行破坏性 git {subcommand}。")
+            raise ToolExecutionError(f"当前版本禁止执行破坏性 git {subcommand}。")
         if subcommand in READ_ONLY_GIT_COMMANDS:
             return CommandPolicy(tuple(normalized), ToolEffect.READ_ONLY, False)
         if subcommand in CONFIRMED_GIT_COMMANDS:
@@ -335,22 +336,24 @@ class RunCommandTool(Tool):
         """
         for argument in arguments:
             candidate = argument.split("=", 1)[1] if "=" in argument else argument
-            if (
-                PurePosixPath(candidate).is_absolute()
-                or PureWindowsPath(candidate).is_absolute()
-                or ".." in PurePosixPath(candidate).parts
-                or ".." in PureWindowsPath(candidate).parts
-            ):
+            candidate_paths = (
+                PurePosixPath(candidate),
+                PureWindowsPath(candidate),
+            )
+            escapes_workspace = any(
+                path.is_absolute() or ".." in path.parts for path in candidate_paths
+            )
+            if escapes_workspace:
                 raise ToolExecutionError("命令参数不得引用工作区外的路径。")
 
     def _validate_git_repository(self, policy: CommandPolicy, cwd: Path) -> None:
         if Path(policy.argv[0]).name.lower().removesuffix(".exe") != "git":
             if len(policy.argv) >= 2 and policy.argv[1].lower().endswith(".py"):
                 script_path = (cwd / policy.argv[1]).resolve(strict=False)
-                if (
-                    not self._guard.is_accessible(script_path)
-                    or not script_path.is_file()
-                ):
+                script_is_valid = (
+                    self._guard.is_accessible(script_path) and script_path.is_file()
+                )
+                if not script_is_valid:
                     raise ToolExecutionError("Python 脚本不存在或不在工作区内。")
             return
         # Git 会从 cwd 开始向父目录寻找 .git。

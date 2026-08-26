@@ -358,7 +358,7 @@ class ApplyPatchTool(Tool):
             rollback_errors = self._rollback(committed)
             if rollback_errors:
                 raise ToolExecutionError(
-                    "补丁写入失败，并且部分文件无法回滚；请立即检查工作区状态。",
+                    "补丁写入失败，且部分文件无法回滚；请立即检查工作区状态。",
                     side_effect_possible=True,
                 ) from error
             raise ToolExecutionError(

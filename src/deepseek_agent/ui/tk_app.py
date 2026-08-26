@@ -8,10 +8,11 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Any
 
-from ..agent import Agent, AgentCancelledError
+from ..agent import Agent
 from ..config import Settings
 from ..models import ToolCallRequest
-from ..runtime import AgentEvent, AgentEventType, RunStatus, TurnOutcome
+from ..runtime import TurnOutcome
+from .chat_runner import AgentChatRunner
 from .confirmation import (
     ConfirmationRequest,
     TkToolConfirmer,
@@ -103,6 +104,11 @@ class AgentApp:
 
         confirmer = TkToolConfirmer(self._events, self._closing)
         self._agent = Agent(settings, confirmer=confirmer, logger=logger)
+        self._chat_runner = AgentChatRunner(
+            self._agent,
+            self._events,
+            self._cancel,
+        )
 
         self._configure_window()
         self._configure_styles()
@@ -573,68 +579,11 @@ class AgentApp:
         self._start_activity()
 
         self._worker = threading.Thread(
-            target=self._run_chat,
+            target=self._chat_runner.run,
             args=(prompt,),
             daemon=False,
         )
         self._worker.start()
-
-    def _run_chat(self, prompt: str) -> None:
-        try:
-            outcome = self._agent.chat(
-                prompt,
-                on_text=lambda content: self._events.put(("text", content)),
-                on_tool_call=lambda request: self._events.put(
-                    ("tool_call", request)
-                ),
-                on_tool_result=lambda request, result: self._events.put(
-                    ("tool_result", (request, result))
-                ),
-                on_event=self._queue_runtime_event,
-                should_cancel=self._cancel.is_set,
-            )
-        except AgentCancelledError as error:
-            outcome = error.outcome
-            self._events.put(
-                (
-                    "cancelled",
-                    (
-                        str(error),
-                        (
-                            outcome.history_preserved
-                            if outcome is not None
-                            else error.tool_records_preserved
-                        ),
-                    ),
-                )
-            )
-        except Exception as error:
-            outcome = self._agent.last_turn_outcome
-            self._events.put(
-                (
-                    "error",
-                    (
-                        str(error),
-                        (
-                            outcome.history_preserved
-                            if outcome is not None
-                            else self._agent.last_turn_history_preserved
-                        ),
-                    ),
-                )
-            )
-        else:
-            if outcome.status is RunStatus.STEP_LIMIT_REACHED:
-                self._events.put(("step_limit_reached", outcome))
-            elif outcome.status is RunStatus.WAITING_USER:
-                self._events.put(("waiting_user", outcome))
-            else:
-                self._events.put(("done", outcome))
-
-    def _queue_runtime_event(self, event: AgentEvent) -> None:
-        """把需要 GUI 展示的统一运行事件转发到 Tk 主线程。"""
-        if event.type is AgentEventType.PLAN_UPDATED:
-            self._events.put(("plan_updated", event.plan))
 
     def _stop(self) -> None:
         if self._is_busy():

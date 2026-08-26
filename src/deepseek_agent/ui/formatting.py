@@ -20,6 +20,17 @@ EXTENSION_LANGUAGES = {
     ".sh": "shell",
     ".ps1": "powershell",
 }
+EMOJI_RANGES = (
+    (0x1F000, 0x1FAFF),
+    (0x1FC00, 0x1FFFD),
+    (0x2300, 0x23FF),
+    (0x2600, 0x27BF),
+    (0x2B00, 0x2BFF),
+)
+EXACT_EMOJI_CODEPOINTS = frozenset(
+    {0x00A9, 0x00AE, 0x2122, 0x3030, 0x303D, 0x3297, 0x3299}
+)
+EMOJI_SUFFIX_CODEPOINTS = frozenset({0xFE0E, 0xFE0F, 0x20E3})
 
 
 def _content_language_hint(arguments: str) -> str:
@@ -98,21 +109,19 @@ def _split_emoji_spans(value: str) -> list[tuple[str, bool]]:
 
     def is_emoji_base(character: str) -> bool:
         codepoint = ord(character)
-        return (
-            0x1F000 <= codepoint <= 0x1FAFF
-            or 0x1FC00 <= codepoint <= 0x1FFFD
-            or 0x2300 <= codepoint <= 0x23FF
-            or 0x2600 <= codepoint <= 0x27BF
-            or 0x2B00 <= codepoint <= 0x2BFF
-            or codepoint
-            in {0x00A9, 0x00AE, 0x2122, 0x3030, 0x303D, 0x3297, 0x3299}
-        )
+        in_range = any(start <= codepoint <= end for start, end in EMOJI_RANGES)
+        return in_range or codepoint in EXACT_EMOJI_CODEPOINTS
+
+    def is_regional_indicator(codepoint: int) -> bool:
+        return 0x1F1E6 <= codepoint <= 0x1F1FF
 
     def consume_suffix(position: int) -> int:
-        while position < len(value) and (
-            ord(value[position]) in {0xFE0E, 0xFE0F, 0x20E3}
-            or 0x1F3FB <= ord(value[position]) <= 0x1F3FF
-        ):
+        while position < len(value):
+            codepoint = ord(value[position])
+            is_suffix = codepoint in EMOJI_SUFFIX_CODEPOINTS
+            is_suffix = is_suffix or 0x1F3FB <= codepoint <= 0x1F3FF
+            if not is_suffix:
+                break
             position += 1
         return position
 
@@ -143,11 +152,11 @@ def _split_emoji_spans(value: str) -> list[tuple[str, bool]]:
         else:
             first_codepoint = ord(value[index])
             index = consume_suffix(index + 1)
-            if (
-                0x1F1E6 <= first_codepoint <= 0x1F1FF
-                and index < len(value)
-                and 0x1F1E6 <= ord(value[index]) <= 0x1F1FF
-            ):
+            has_second_character = index < len(value)
+            second_is_regional = (
+                has_second_character and is_regional_indicator(ord(value[index]))
+            )
+            if is_regional_indicator(first_codepoint) and second_is_regional:
                 index = consume_suffix(index + 1)
             while index + 1 < len(value) and ord(value[index]) == 0x200D:
                 index = consume_suffix(index + 2)

@@ -47,7 +47,7 @@ class RecoveryIssue:
         if self.tool_status == "result_unknown":
             return (
                 f"工具 {self.tool_name}（调用 {self.call_id}）已经执行，"
-                "但工具报告结果未知，并且所属轮次没有完成保存。"
+                "但工具结果仍不明确，所属轮次也没有完成保存。"
                 "请先检查外部状态，不要直接自动重试。"
             )
         return (

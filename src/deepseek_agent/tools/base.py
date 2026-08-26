@@ -30,7 +30,7 @@ class ToolNotFoundError(ToolError):
 
 
 class ToolExecutionError(ToolError):
-    """表示工具参数无效或发生了可预期的执行失败。"""
+    """表示工具参数无效，或执行过程中出现了可预期的失败。"""
 
     def __init__(
         self,

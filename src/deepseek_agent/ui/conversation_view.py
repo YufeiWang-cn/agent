@@ -1065,10 +1065,8 @@ class ConversationView(ttk.Frame):
         self._live_tool_start = None
 
     def _render_completed_turn(self, messages: list[dict[str, Any]]) -> bool:
-        if (
-            self._live_tool_start is None
-            or self._live_response_mark not in self._chat_view.mark_names()
-        ):
+        has_live_response = self._live_response_mark in self._chat_view.mark_names()
+        if self._live_tool_start is None or not has_live_response:
             return False
 
         tail = _messages_after_last_user(messages)

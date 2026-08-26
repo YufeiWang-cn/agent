@@ -87,14 +87,11 @@ class ToolExecutionRecord:
     @property
     def can_retry_safely(self) -> bool:
         """返回系统是否可以依据工具声明安全地重试本次调用。"""
-        return (
-            self.status in {
-                ToolExecutionStatus.FAILED,
-                ToolExecutionStatus.RESULT_UNKNOWN,
-            }
-            and self.retryable
-            and self.idempotent
-        )
+        retryable_status = self.status in {
+            ToolExecutionStatus.FAILED,
+            ToolExecutionStatus.RESULT_UNKNOWN,
+        }
+        return retryable_status and self.retryable and self.idempotent
 
 
 Clock = Callable[[], datetime]
@@ -237,11 +234,11 @@ class ToolExecutor:
                 error_message=str(error),
             )
         except Exception as error:
+            write_tool = tool is not None and effect is not ToolEffect.READ_ONLY
+            side_effect_possible = execution_started and write_tool
             status = (
                 ToolExecutionStatus.RESULT_UNKNOWN
-                if execution_started
-                and tool is not None
-                and effect is not ToolEffect.READ_ONLY
+                if side_effect_possible
                 else ToolExecutionStatus.FAILED
             )
             return self._record(

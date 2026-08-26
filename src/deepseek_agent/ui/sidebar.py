@@ -592,11 +592,13 @@ class ProjectSessionSidebar(ttk.Frame):
         was_current = session.id == self._agent.session_id
         selected_project = self._selected_project_id()
         try:
+            has_selected_project = selected_project not in {
+                ALL_PROJECTS,
+                UNASSIGNED_PROJECT,
+            }
+            can_keep_selected_project = was_current and has_selected_project
             replacement_project_id = (
-                selected_project
-                if was_current
-                and selected_project not in {ALL_PROJECTS, UNASSIGNED_PROJECT}
-                else None
+                selected_project if can_keep_selected_project else None
             )
             self._agent.delete_session(
                 session.id,

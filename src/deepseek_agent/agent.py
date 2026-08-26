@@ -1,6 +1,5 @@
 """编排模型、工具、上下文、持久化和运行恢复等 Agent 核心流程。"""
 
-import json
 import logging
 import threading
 from pathlib import Path
@@ -26,16 +25,15 @@ from .memory import (
 )
 from .models import ChatModel, DeepSeekModel, TextDelta, ToolCallRequest
 from .observability import RuntimeMetrics
+from .plan_runtime import PlanRuntime
 from .permissions import ConsoleToolConfirmer, ToolConfirmer
 from .planning import (
     PlanExecutionScope,
     PlanKind,
-    PlanStepStatus,
     TaskPlan,
-    validate_plan_transition,
 )
 from .reliability import RetryPolicy, RetryingChatModel
-from .runtime import AgentEvent, RunStatus, TurnOutcome
+from .runtime import AgentEvent, RunStatus, TurnOutcome, TurnRuntimeState
 from .tools import ToolEffect, ToolRegistry, build_default_registry
 
 
@@ -92,18 +90,18 @@ class Agent:
         self._logger = logger or logging.getLogger(__name__)
         base_model = model or DeepSeekModel(settings)
         self._metrics = metrics or RuntimeMetrics()
+        effective_retry_policy = retry_policy or RetryPolicy(
+            max_retries=settings.max_retries,
+            base_delay_seconds=settings.retry_base_delay,
+        )
         self._model = RetryingChatModel(
             base_model,
-            retry_policy
-            or RetryPolicy(
-                max_retries=settings.max_retries,
-                base_delay_seconds=settings.retry_base_delay,
-            ),
+            effective_retry_policy,
             self._metrics,
             logger=logger,
         )
-        # 计划状态独立于模型消息，避免把界面数据混入 API 对话协议。
-        self._current_plan: TaskPlan | None = None
+        # 计划运行时独立维护计划快照和单步边界，避免把界面状态混入消息协议。
+        self._plan_runtime = PlanRuntime()
         self._max_agent_steps = settings.max_agent_steps
         self._tools = (
             tools
@@ -138,7 +136,7 @@ class Agent:
         )
         self._tool_executor = ToolExecutor(self._tools, self._confirmer)
         self._session = self._restore_latest_session()
-        self._current_plan = self._session.plan
+        self._plan_runtime.restore(self._session.plan)
         # 回滚结果状态用于记录最近一次中断所采用的处理方式。
         # 界面根据该状态决定删除临时轮次还是重新渲染工具历史。
         self._last_turn_history_preserved = False
@@ -147,13 +145,7 @@ class Agent:
         # 状态锁确保同一个 Agent 实例不会同时执行两个轮次。
         self._run_status_lock = threading.Lock()
         self._run_status = RunStatus.IDLE
-        self._current_turn_tool_records: list[ToolExecutionRecord] = []
-        self._current_turn_id: str | None = None
-        self._current_turn_side_effects_saved = False
-        self._current_turn_finished_recorded = False
-        self._current_turn_step_target: str | None = None
-        self._current_turn_step_boundary_reached = False
-        self._current_turn_plan_scope: PlanExecutionScope | None = None
+        self._turn_state = TurnRuntimeState()
 
     def chat(
         self,
@@ -170,24 +162,19 @@ class Agent:
         本方法只回滚 Conversation 中属于当前轮次的消息。
         已经完成的工具可能产生文件等外部副作用。
         这类外部副作用不会被自动撤销。
-        相应的工具记录会被保留，从而使会话历史与真实外部状态保持一致。
+        系统会保留相应的工具记录，使会话历史与真实外部状态保持一致。
         """
         # 回滚检查点保存本轮开始前的消息数量。
         # 回滚只删除本轮新增消息，不影响旧会话历史。
         checkpoint = len(self._conversation)
         self._begin_turn()
         plan_checkpoint = self._current_plan
-        self._current_turn_id = uuid4().hex
-        self._record_turn_started_safely(self._current_turn_id)
+        turn_id = uuid4().hex
+        self._turn_state.begin(turn_id)
+        self._record_turn_started_safely(turn_id)
         # 每轮开始先清空上轮的结果，避免界面误用旧的“已保留”状态。
         self._last_turn_history_preserved = False
         self._last_turn_outcome = None
-        self._current_turn_tool_records = []
-        self._current_turn_side_effects_saved = False
-        self._current_turn_finished_recorded = False
-        self._current_turn_step_target = None
-        self._current_turn_step_boundary_reached = False
-        self._current_turn_plan_scope = None
         self._conversation.add_user(prompt)
         steps_completed = 0
         force_plan_continuation = False
@@ -219,12 +206,7 @@ class Agent:
                         tool_requests.append(event)
                 steps_completed += 1
 
-                if (
-                    tool_requests
-                    and self._current_plan is not None
-                    and self._current_plan.scope is PlanExecutionScope.SINGLE_STEP
-                    and self._current_turn_step_boundary_reached
-                ):
+                if tool_requests and self._single_step_boundary_reached():
                     # 单步目标已在上一批工具中结束或暂停，不再执行额外工具。
                     waiting_for_user = self._current_plan.waiting_for_user
                     answer = "".join(answer_parts) or (
@@ -264,11 +246,7 @@ class Agent:
                         if on_text is not None:
                             on_text(answer)
                     self._conversation.add_assistant(answer)
-                    if (
-                        self._current_plan is not None
-                        and self._current_plan.kind is PlanKind.EXECUTION
-                        and not self._current_plan.terminal
-                    ):
+                    if self._has_active_execution_plan():
                         if self._current_plan.waiting_for_user:
                             self._save_completed_turn(checkpoint)
                             return self._finish_turn_outcome(
@@ -278,10 +256,7 @@ class Agent:
                                 checkpoint=checkpoint,
                                 history_preserved=True,
                             )
-                        if (
-                            self._current_plan.scope is PlanExecutionScope.SINGLE_STEP
-                            and self._current_turn_step_boundary_reached
-                        ):
+                        if self._single_step_boundary_reached():
                             self._save_completed_turn(checkpoint)
                             return self._finish_turn_outcome(
                                 status=RunStatus.COMPLETED,
@@ -365,7 +340,7 @@ class Agent:
                 try:
                     # 已完成工具的记录必须成功落盘，否则本轮最终状态应改为失败。
                     self._save_session()
-                    self._current_turn_side_effects_saved = True
+                    self._turn_state.side_effects_saved = True
                     self._record_turn_finished_safely(outcome)
                 except Exception as save_error:
                     self._finish_turn_outcome(
@@ -406,7 +381,7 @@ class Agent:
                 try:
                     # 已完成工具的记录必须成功落盘，否则保留失败状态并继续抛出保存异常。
                     self._save_session()
-                    self._current_turn_side_effects_saved = True
+                    self._turn_state.side_effects_saved = True
                     self._record_turn_finished_safely(outcome)
                 except Exception as save_error:
                     self._finish_turn_outcome(
@@ -429,14 +404,15 @@ class Agent:
         on_event: AgentEventCallback | None = None,
         should_cancel: CancelCheck | None = None,
     ) -> list[ToolExecutionRecord]:
-        if self._current_turn_id is None:
+        if self._turn_state.id is None:
             # 私有方法的测试或扩展调用可能绕过 chat()，此时仍需建立可追踪的临时轮次。
-            self._current_turn_id = uuid4().hex
-            self._record_turn_started_safely(self._current_turn_id)
+            turn_id = uuid4().hex
+            self._turn_state.begin(turn_id)
+            self._record_turn_started_safely(turn_id)
         records: list[ToolExecutionRecord] = []
         for request in requests:
             # 工具开始前需要检查停止信号。
-            # 工具一旦开始执行就应完整结束，从而避免强行中断写入造成半写状态。
+            # 工具一旦开始执行就应完整结束，避免强行中断写入造成半写状态。
             # 工具执行结束后的记录由统一的回滚策略处理。
             self._raise_if_cancelled(should_cancel)
             self._emit_event(
@@ -458,7 +434,7 @@ class Agent:
                 should_cancel=should_cancel,
             )
             records.append(record)
-            self._current_turn_tool_records.append(record)
+            self._turn_state.add_tool_record(record)
 
             # 工具可能已经改变文件等外部状态，因此必须先把真实结果写入历史。
             self._conversation.add_tool_result(
@@ -494,13 +470,14 @@ class Agent:
         request: ToolCallRequest,
         waiting: bool,
     ) -> None:
-        """更新确认状态，并尽力记录确认请求已经出现。"""
+        """更新确认状态，并尽力记录工具已进入等待确认阶段。"""
         self._handle_confirmation_state(waiting)
-        if not waiting or self._current_turn_id is None:
+        turn_id = self._turn_state.id
+        if not waiting or turn_id is None:
             return
         try:
             self._run_journal.record_confirmation_requested(
-                self._current_turn_id,
+                turn_id,
                 request,
             )
         except RunJournalError as error:
@@ -508,11 +485,12 @@ class Agent:
 
     def _record_tool_started(self, start: ToolExecutionStart) -> None:
         """在工具执行前记录开始事件，并保护可能产生副作用的操作。"""
-        if self._current_turn_id is None:
+        turn_id = self._turn_state.id
+        if turn_id is None:
             raise RunJournalError("当前工具调用缺少轮次标识。")
         try:
             self._run_journal.record_tool_started(
-                self._current_turn_id,
+                turn_id,
                 start,
             )
         except RunJournalError:
@@ -525,11 +503,12 @@ class Agent:
 
     def _record_tool_finished(self, record: ToolExecutionRecord) -> None:
         """记录工具结束事件，并对可能存在副作用的结果执行严格检查。"""
-        if self._current_turn_id is None:
+        turn_id = self._turn_state.id
+        if turn_id is None:
             raise RunJournalError("当前工具结果缺少轮次标识。")
         try:
             self._run_journal.record_tool_finished(
-                self._current_turn_id,
+                turn_id,
                 record,
             )
         except RunJournalError:
@@ -540,11 +519,12 @@ class Agent:
 
     def _record_plan_updated_safely(self) -> None:
         """尽力记录不含步骤正文的计划状态变化。"""
-        if self._current_turn_id is None or self._current_plan is None:
+        turn_id = self._turn_state.id
+        if turn_id is None or self._current_plan is None:
             return
         try:
             self._run_journal.record_plan_updated(
-                self._current_turn_id,
+                turn_id,
                 self._current_plan,
             )
         except RunJournalError as error:
@@ -582,17 +562,11 @@ class Agent:
             ),
             history_preserved=history_preserved,
             error_message=error_message,
-            tool_records=tuple(self._current_turn_tool_records),
+            tool_records=tuple(self._turn_state.tool_records),
         )
         self._last_turn_outcome = outcome
         self._set_run_status(status)
-        if (
-            not any(
-                record.may_have_side_effect
-                for record in self._current_turn_tool_records
-            )
-            or self._current_turn_side_effects_saved
-        ):
+        if not self._turn_state.has_side_effects or self._turn_state.side_effects_saved:
             self._record_turn_finished_safely(outcome)
         return outcome
 
@@ -605,14 +579,12 @@ class Agent:
 
     def _record_turn_finished_safely(self, outcome: TurnOutcome) -> None:
         """尽力记录轮次终止事件，且不覆盖原本的业务结果。"""
-        if (
-            self._current_turn_id is None
-            or self._current_turn_finished_recorded
-        ):
+        turn_id = self._turn_state.id
+        if turn_id is None or self._turn_state.finish_recorded:
             return
         try:
             self._run_journal.record_turn_finished(
-                self._current_turn_id,
+                turn_id,
                 status=outcome.status.value,
                 steps_completed=outcome.steps_completed,
                 tool_calls_completed=outcome.tool_calls_completed,
@@ -621,7 +593,7 @@ class Agent:
             )
             # 同一轮可能经过“生成结果、保存记录、保存失败处理”等多个收尾路径。
             # 只有首次成功写入才关闭日志边界，避免重复的 turn_finished 事件。
-            self._current_turn_finished_recorded = True
+            self._turn_state.finish_recorded = True
         except RunJournalError as error:
             self._logger.warning("无法记录轮次结束事件：%s", error)
 
@@ -639,225 +611,76 @@ class Agent:
             if self._run_status.active:
                 raise RuntimeError("当前 Agent 已经有一轮任务正在执行。")
             self._run_status = RunStatus.RUNNING
+        self._plan_runtime.begin_turn()
 
     def _commit_plan(
         self,
         plan: TaskPlan,
         replace_current: bool = False,
     ) -> TaskPlan:
-        """提交计划更新，并区分延续当前计划和开始无关的新计划。"""
-        previous = self._current_plan
-        starts_new_plan = (
-            previous is None or previous.terminal or replace_current
-        )
-        if starts_new_plan:
-            if (
-                previous is not None
-                and not previous.terminal
-                and replace_current
-                and not plan.explanation
-            ):
-                raise ValueError("替换未结束的计划时必须提供 explanation。")
-            committed = plan.with_identity(plan.id, 1)
-        else:
-            validate_plan_transition(previous, plan)
-            committed = plan.with_identity(
-                previous.id,
-                previous.revision + 1,
-            )
-        self._track_single_step_progress(previous, committed)
-        self._current_plan = committed
-        return committed
+        """把模型提交的计划交给独立计划运行时处理。"""
+        return self._plan_runtime.commit(plan, replace_current)
 
-    def _track_single_step_progress(
+    # 这些兼容属性保留既有内部扩展和测试入口，状态仍由 PlanRuntime 统一维护。
+    @property
+    def _current_plan(self) -> TaskPlan | None:
+        return self._plan_runtime.current
+
+    @_current_plan.setter
+    def _current_plan(self, plan: TaskPlan | None) -> None:
+        self._plan_runtime.restore(plan)
+
+    @property
+    def _current_turn_step_target(self) -> str | None:
+        return self._plan_runtime.target
+
+    @_current_turn_step_target.setter
+    def _current_turn_step_target(self, target: str | None) -> None:
+        self._plan_runtime.target = target
+
+    @property
+    def _current_turn_step_boundary_reached(self) -> bool:
+        return self._plan_runtime.boundary_reached
+
+    @_current_turn_step_boundary_reached.setter
+    def _current_turn_step_boundary_reached(self, reached: bool) -> None:
+        self._plan_runtime.boundary_reached = reached
+
+    @property
+    def _current_turn_plan_scope(self) -> PlanExecutionScope | None:
+        return self._plan_runtime.scope
+
+    @_current_turn_plan_scope.setter
+    def _current_turn_plan_scope(
         self,
-        previous: TaskPlan | None,
-        current: TaskPlan,
+        scope: PlanExecutionScope | None,
     ) -> None:
-        """锁定本轮单步目标，并拒绝在同一轮继续推进其他步骤。"""
-        if previous is not None and previous.id != current.id:
-            self._current_turn_step_target = None
-            self._current_turn_step_boundary_reached = False
-            self._current_turn_plan_scope = None
-
-        if self._current_turn_plan_scope is None:
-            self._current_turn_plan_scope = current.scope
-        elif (
-            previous is not None
-            and previous.id == current.id
-            and current.scope is not self._current_turn_plan_scope
-        ):
-            raise ValueError("同一轮内不能改变计划执行范围。")
-
-        if (
-            current.kind is not PlanKind.EXECUTION
-            or current.scope is not PlanExecutionScope.SINGLE_STEP
-        ):
-            self._current_turn_step_target = None
-            self._current_turn_step_boundary_reached = False
-            return
-
-        previous_statuses = (
-            {step.step: step.status for step in previous.steps}
-            if previous is not None and previous.id == current.id
-            else {}
-        )
-        if self._current_turn_step_target is None:
-            # 延续已有计划时，本轮目标必须由上一轮快照决定。
-            # 否则模型可在首次更新中同时完成当前步并启动下一步。
-            target_steps = (
-                previous.steps
-                if previous is not None and previous.id == current.id
-                else current.steps
-            )
-            active_step = next(
-                (
-                    step
-                    for step in target_steps
-                    if step.status
-                    in {
-                        PlanStepStatus.IN_PROGRESS,
-                        PlanStepStatus.WAITING_USER,
-                    }
-                ),
-                None,
-            )
-            newly_finished = next(
-                (
-                    step
-                    for step in current.steps
-                    if step.status.terminal
-                    and not previous_statuses.get(
-                        step.step,
-                        PlanStepStatus.PENDING,
-                    ).terminal
-                ),
-                None,
-            )
-            pending_step = next(
-                (
-                    step
-                    for step in target_steps
-                    if step.status is PlanStepStatus.PENDING
-                ),
-                None,
-            )
-            target = active_step or newly_finished or pending_step
-            self._current_turn_step_target = (
-                target.step if target is not None else None
-            )
-
-        if previous is not None and previous.id == current.id:
-            for step in current.steps:
-                if step.step == self._current_turn_step_target:
-                    continue
-                old_status = previous_statuses.get(step.step)
-                if old_status is not None and step.status is not old_status:
-                    raise ValueError(
-                        "single_step 模式本轮只能推进目标步骤："
-                        f"{self._current_turn_step_target}"
-                    )
-
-        if self._current_turn_step_target is None:
-            self._current_turn_step_boundary_reached = current.terminal
-            return
-        target_status = next(
-            (
-                step.status
-                for step in current.steps
-                if step.step == self._current_turn_step_target
-            ),
-            None,
-        )
-        if target_status is None:
-            raise ValueError("single_step 模式不能在本轮删除目标步骤。")
-        self._current_turn_step_boundary_reached = (
-            target_status.terminal
-            or target_status is PlanStepStatus.WAITING_USER
-        )
+        self._plan_runtime.scope = scope
 
     def _prepare_model_messages(
         self,
         *,
         force_plan_continuation: bool,
     ) -> list[Message]:
-        """把最新计划快照作为运行时约束注入本次模型请求。"""
-        messages = [dict(message) for message in self._conversation.messages]
-        if not messages or self._current_plan is None:
-            return list(self._context_manager.prepare(messages).messages)
-
-        plan = self._current_plan
-        snapshot = json.dumps(plan.to_dict(), ensure_ascii=False)
-        if plan.kind is PlanKind.PROPOSAL:
-            instruction = (
-                "当前会话最近保存的是已经交付的规划方案，不代表这些步骤已经执行。"
-            )
-        elif plan.terminal:
-            instruction = "当前执行计划已经结束，可以处理用户的新请求。"
-        elif plan.scope is PlanExecutionScope.SINGLE_STEP:
-            target = self._current_turn_step_target or next(
-                (
-                    step.step
-                    for step in plan.steps
-                    if step.status
-                    in {
-                        PlanStepStatus.IN_PROGRESS,
-                        PlanStepStatus.WAITING_USER,
-                        PlanStepStatus.PENDING,
-                    }
-                ),
-                "当前步骤",
-            )
-            if self._current_turn_step_boundary_reached:
-                instruction = (
-                    f"本轮 single_step 目标“{target}”已经结束。"
-                    "不得调用工具或开始后续步骤，只需简洁总结本步结果并结束本轮。"
-                )
-            else:
-                instruction = (
-                    f"当前计划采用 single_step，本轮只允许执行目标“{target}”。"
-                    "完成、失败、跳过或等待用户后应调用 update_plan 更新该步骤，"
-                    "然后结束本轮；不得推进后续步骤。"
-                )
-        else:
-            instruction = (
-                "当前执行计划仍然有效。继续相关任务时必须基于该快照推进并调用 "
-                "update_plan 更新状态；用户切换到无关的新复杂任务时，应使用 "
-                "replace=true 替换计划并说明原因；切换到简单请求时，应先把旧计划"
-                "未结束步骤标为 skipped。需要用户补充信息时，先把当前步骤设为 "
-                "waiting_user，再向用户提问。"
-            )
-        if force_plan_continuation:
-            if plan.scope is PlanExecutionScope.SINGLE_STEP:
-                instruction += (
-                    " 你刚才在单步目标尚未结束时停止了工具调用。"
-                    "请只继续当前目标，不得开始后续步骤。"
-                )
-            else:
-                instruction += (
-                    " 你刚才在执行计划尚未结束时停止了工具调用。不要重复总结；"
-                    "请继续执行当前步骤，或者用 update_plan 准确更新为完成、失败、"
-                    "跳过或等待用户。"
-                )
-        runtime_context = f"\n\n[运行时计划状态]\n{instruction}\n{snapshot}"
-        first = messages[0]
-        messages[0] = {
-            **first,
-            "content": str(first.get("content", "")) + runtime_context,
-        }
-        if force_plan_continuation:
-            # DeepSeek 普通对话不能把未声明 prefix 的 assistant 消息作为请求结尾。
-            # 该控制消息只参与本次请求，不会写入会话或显示为用户消息。
-            messages.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "[运行时控制] 当前目标尚未结束。请遵守计划的 scope，"
-                        "继续允许范围内的工作，或调用 update_plan 准确更新状态。"
-                    ),
-                }
-            )
+        """注入计划运行时约束，再按上下文预算裁剪消息。"""
+        messages = self._plan_runtime.attach_to_messages(
+            self._conversation.messages,
+            force_continuation=force_plan_continuation,
+        )
         return list(self._context_manager.prepare(messages).messages)
+
+    def _has_active_execution_plan(self) -> bool:
+        """返回当前是否存在尚未结束的执行计划。"""
+        plan = self._current_plan
+        return plan is not None and plan.kind is PlanKind.EXECUTION and not plan.terminal
+
+    def _single_step_boundary_reached(self) -> bool:
+        """返回当前计划是否已到达本轮单步边界。"""
+        plan = self._current_plan
+        uses_single_step = (
+            plan is not None and plan.scope is PlanExecutionScope.SINGLE_STEP
+        )
+        return uses_single_step and self._plan_runtime.boundary_reached
 
     def _set_run_status(self, status: RunStatus) -> None:
         """在线程锁保护下更新当前轮次的运行状态。"""
@@ -908,8 +731,7 @@ class Agent:
         completed_call_ids = {
             str(message.get("tool_call_id", ""))
             for message in turn_messages
-            if message.get("role") == "tool"
-            and message.get("tool_call_id")
+            if message.get("role") == "tool" and message.get("tool_call_id")
         }
         if not completed_call_ids:
             return False
@@ -944,7 +766,7 @@ class Agent:
         if has_tool_results:
             # 工具结果可能对应已经生效的外部副作用，因此保存失败必须向上抛出。
             self._save_session()
-            self._current_turn_side_effects_saved = True
+            self._turn_state.side_effects_saved = True
             return
         # 纯文本回复没有外部副作用，因此采用尽力保存策略，避免保存失败阻断对话。
         self._save_session_best_effort()
@@ -1056,7 +878,7 @@ class Agent:
             deleted = self._project_store.delete(project.id)
         except Exception as error:
             # 补偿回滚会逐个写回操作前保存的会话快照。
-            # JSON 文件存储不支持原生事务，因此这里使用反向操作进行恢复。
+            # JSON 文件存储不支持原生事务，因此这里使用反向操作恢复原状态。
             rollback_errors: list[str] = []
             for snapshot in affected:
                 try:
@@ -1072,7 +894,7 @@ class Agent:
                 ) from error
             raise
         # 只有磁盘上的会话移动和项目删除都成功后，才会提交当前内存状态。
-        # 延迟提交可以避免磁盘操作失败时界面提前显示尚未生效的状态。
+        # 延迟提交可防止界面提前显示尚未生效的状态。
         if self._session.id in moved_sessions:
             self._session = moved_sessions[self._session.id]
         return deleted

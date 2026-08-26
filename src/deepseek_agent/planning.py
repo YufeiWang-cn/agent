@@ -122,11 +122,11 @@ class TaskPlan:
             seen_steps.add(normalized_text)
             steps.append(PlanStep(normalized_text, normalized_status))
 
-        active_count = sum(
-            step.status
-            in {PlanStepStatus.IN_PROGRESS, PlanStepStatus.WAITING_USER}
-            for step in steps
-        )
+        active_statuses = {
+            PlanStepStatus.IN_PROGRESS,
+            PlanStepStatus.WAITING_USER,
+        }
+        active_count = sum(step.status in active_statuses for step in steps)
         if active_count > 1:
             raise ValueError("同一时间最多只能有一个进行中或等待用户的步骤。")
         if normalized_kind is PlanKind.PROPOSAL and any(
@@ -228,10 +228,7 @@ def validate_plan_transition(
             continue
         if old_status.terminal and step.status is not old_status:
             raise ValueError(f"已结束的步骤不能回退状态：{step.step}")
-        if (
-            old_status is PlanStepStatus.IN_PROGRESS
-            and step.status is PlanStepStatus.PENDING
-        ):
+        if old_status is PlanStepStatus.IN_PROGRESS and step.status is PlanStepStatus.PENDING:
             raise ValueError(f"进行中的步骤不能退回待处理：{step.step}")
 
 

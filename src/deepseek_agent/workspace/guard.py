@@ -115,7 +115,7 @@ class WorkspaceGuard:
 
     def relative_path(self, path: Path) -> str:
         relative = path.relative_to(self._root)
-        # POSIX 形式可以避免 Windows 反斜杠在 JSON 中产生大量转义。
+        # POSIX 形式可减少 Windows 反斜杠在 JSON 中产生的转义字符。
         return "." if not relative.parts else relative.as_posix()
 
     def is_accessible(self, path: Path) -> bool:
@@ -151,8 +151,5 @@ class WorkspaceGuard:
 
         lowered_relative = Path(*lowered_parts)
         for blocked_prefix in DEFAULT_BLOCKED_PREFIXES:
-            if (
-                lowered_relative == blocked_prefix
-                or blocked_prefix in lowered_relative.parents
-            ):
+            if lowered_relative == blocked_prefix or blocked_prefix in lowered_relative.parents:
                 raise WorkspaceAccessError(f"禁止访问敏感路径：{user_path}")
