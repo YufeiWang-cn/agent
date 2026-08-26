@@ -47,121 +47,129 @@ def parse_markdown(content: str) -> list[MarkdownBlock]:
     blocks: list[MarkdownBlock] = []
     index = 0
     while index < len(lines):
-        line = lines[index]
-        stripped = line.strip()
-
-        fence = re.match(r"^\s*(```|~~~)\s*([\w.+-]*)\s*$", line)
-        if fence:
-            delimiter = fence.group(1)
-            language = _normalize_language(fence.group(2))
-            index += 1
-            code_lines: list[str] = []
-            while index < len(lines):
-                if re.match(rf"^\s*{re.escape(delimiter)}\s*$", lines[index]):
-                    index += 1
-                    break
-                code_lines.append(lines[index])
-                index += 1
-            blocks.append(
-                MarkdownBlock("code", "\n".join(code_lines), language=language)
-            )
+        fenced = _parse_fenced_code(lines, index)
+        if fenced is not None:
+            block, index = fenced
+            blocks.append(block)
             continue
 
-        if not stripped:
+        if not lines[index].strip():
             if blocks and blocks[-1].kind != "blank":
                 blocks.append(MarkdownBlock("blank"))
             index += 1
             continue
 
-        if index + 1 < len(lines):
-            headers = _split_table_row(line)
-            separator = _split_table_row(lines[index + 1])
-            if headers and _is_table_separator(separator, len(headers)):
-                index += 2
-                rows: list[tuple[str, ...]] = []
-                while index < len(lines) and lines[index].strip():
-                    row = _split_table_row(lines[index])
-                    if not row:
-                        break
-                    normalized_row = tuple(
-                        (row[column] if column < len(row) else "")
-                        for column in range(len(headers))
-                    )
-                    rows.append(normalized_row)
-                    index += 1
-                blocks.append(
-                    MarkdownBlock(
-                        "table",
-                        headers=tuple(headers),
-                        rows=tuple(rows),
-                    )
-                )
-                continue
+        table = _parse_table(lines, index)
+        if table is not None:
+            block, index = table
+            blocks.append(block)
+            continue
 
-        heading = re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", line)
-        if heading:
-            blocks.append(
-                MarkdownBlock(
-                    "heading",
-                    heading.group(2),
-                    level=len(heading.group(1)),
-                )
-            )
+        simple = _parse_simple_block(lines[index])
+        if simple is not None:
+            blocks.append(simple)
             index += 1
             continue
 
-        if re.match(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$", line):
-            blocks.append(MarkdownBlock("rule"))
-            index += 1
-            continue
-
-        quote = re.match(r"^\s*>\s?(.*)$", line)
-        if quote:
-            blocks.append(MarkdownBlock("quote", quote.group(1)))
-            index += 1
-            continue
-
-        unordered = re.match(r"^\s*[-*+]\s+(.+)$", line)
-        if unordered:
-            blocks.append(MarkdownBlock("list_item", unordered.group(1), marker="•"))
-            index += 1
-            continue
-
-        ordered = re.match(r"^\s*(\d+)[.)]\s+(.+)$", line)
-        if ordered:
-            blocks.append(
-                MarkdownBlock(
-                    "list_item",
-                    ordered.group(2),
-                    marker=f"{ordered.group(1)}.",
-                )
-            )
-            index += 1
-            continue
-
-        paragraph_lines = [stripped]
-        index += 1
-        while index < len(lines):
-            candidate = lines[index]
-            if not candidate.strip():
-                break
-            if re.match(r"^\s*(```|~~~)", candidate) or _BLOCK_START.match(candidate):
-                break
-            if index + 1 < len(lines):
-                candidate_headers = _split_table_row(candidate)
-                candidate_separator = _split_table_row(lines[index + 1])
-                if candidate_headers and _is_table_separator(
-                    candidate_separator,
-                    len(candidate_headers),
-                ):
-                    break
-            paragraph_lines.append(candidate.strip())
-            index += 1
-        blocks.append(MarkdownBlock("paragraph", " ".join(paragraph_lines)))
+        block, index = _parse_paragraph(lines, index)
+        blocks.append(block)
 
     while blocks and blocks[-1].kind == "blank":
         blocks.pop()
     return blocks
+
+
+def _parse_fenced_code(
+    lines: list[str],
+    index: int,
+) -> tuple[MarkdownBlock, int] | None:
+    """读取围栏代码块，并返回解析后的下一个行号。"""
+    fence = re.match(r"^\s*(```|~~~)\s*([\w.+-]*)\s*$", lines[index])
+    if fence is None:
+        return None
+    delimiter = fence.group(1)
+    language = _normalize_language(fence.group(2))
+    index += 1
+    code_lines: list[str] = []
+    while index < len(lines):
+        if re.match(rf"^\s*{re.escape(delimiter)}\s*$", lines[index]):
+            index += 1
+            break
+        code_lines.append(lines[index])
+        index += 1
+    return MarkdownBlock("code", "\n".join(code_lines), language=language), index
+
+
+def _parse_table(
+    lines: list[str],
+    index: int,
+) -> tuple[MarkdownBlock, int] | None:
+    """识别表头和分隔行，并规范化后续表格单元格。"""
+    if index + 1 >= len(lines):
+        return None
+    headers = _split_table_row(lines[index])
+    separator = _split_table_row(lines[index + 1])
+    if not headers or not _is_table_separator(separator, len(headers)):
+        return None
+
+    index += 2
+    rows: list[tuple[str, ...]] = []
+    while index < len(lines) and lines[index].strip():
+        row = _split_table_row(lines[index])
+        if not row:
+            break
+        normalized_row = tuple(
+            row[column] if column < len(row) else ""
+            for column in range(len(headers))
+        )
+        rows.append(normalized_row)
+        index += 1
+    return MarkdownBlock("table", headers=tuple(headers), rows=tuple(rows)), index
+
+
+def _parse_simple_block(line: str) -> MarkdownBlock | None:
+    """解析只占一行的标题、分隔线、引用和列表节点。"""
+    heading = re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", line)
+    if heading:
+        return MarkdownBlock(
+            "heading",
+            heading.group(2),
+            level=len(heading.group(1)),
+        )
+    if re.match(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$", line):
+        return MarkdownBlock("rule")
+    quote = re.match(r"^\s*>\s?(.*)$", line)
+    if quote:
+        return MarkdownBlock("quote", quote.group(1))
+    unordered = re.match(r"^\s*[-*+]\s+(.+)$", line)
+    if unordered:
+        return MarkdownBlock("list_item", unordered.group(1), marker="•")
+    ordered = re.match(r"^\s*(\d+)[.)]\s+(.+)$", line)
+    if ordered:
+        return MarkdownBlock(
+            "list_item",
+            ordered.group(2),
+            marker=f"{ordered.group(1)}.",
+        )
+    return None
+
+
+def _parse_paragraph(lines: list[str], index: int) -> tuple[MarkdownBlock, int]:
+    """合并连续普通文本，同时在下一个块级节点前停止。"""
+    paragraph_lines = [lines[index].strip()]
+    index += 1
+    while index < len(lines):
+        candidate = lines[index]
+        if not candidate.strip():
+            break
+        starts_block = re.match(r"^\s*(```|~~~)", candidate)
+        if starts_block or _BLOCK_START.match(candidate):
+            break
+        if _parse_table(lines, index) is not None:
+            break
+        paragraph_lines.append(candidate.strip())
+        index += 1
+    return MarkdownBlock("paragraph", " ".join(paragraph_lines)), index
 
 
 def parse_inline(content: str) -> list[InlineSpan]:

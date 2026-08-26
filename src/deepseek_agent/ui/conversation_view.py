@@ -8,26 +8,21 @@ from typing import Any, Callable
 from ..planning import TaskPlan
 from .cards import (
     ConversationRail,
-    MarkdownCodeCard,
-    MarkdownTableCard,
     PlanCard,
     ToolCallCard,
-    UserMessageCard,
 )
-from .formatting import _split_emoji_spans
-from .markdown import MarkdownBlock, parse_inline, parse_markdown
+from .conversation_renderer import ConversationRenderer
+from .conversation_search import ConversationSearchController
+from .conversation_styles import configure_conversation_tags
 from .theme import (
     ACCENT,
-    ASSISTANT_COLOR,
     CARD_BACKGROUND,
-    DANGER,
     EDITOR_BORDER,
-    EMOJI_FONT,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
-    TOOL_COLOR,
     USER_COLOR,
 )
+from .turn_navigation import TurnNavigationController
 
 
 def _messages_after_last_user(
@@ -56,23 +51,11 @@ class ConversationView(ttk.Frame):
         self._focus_composer = focus_composer
         self._tool_cards: dict[str, ToolCallCard] = {}
         self._tool_card_widgets: list[ToolCallCard] = []
-        self._markdown_code_widgets: list[MarkdownCodeCard] = []
-        self._markdown_table_widgets: list[MarkdownTableCard] = []
-        self._user_message_widgets: list[UserMessageCard] = []
-        self._turn_marks: list[str] = []
-        self._turn_questions: list[str] = []
-        self._turn_answers: list[str] = []
-        self._markdown_cache: dict[str, tuple[MarkdownBlock, ...]] = {}
-        self._selected_turn_index: int | None = None
-        self._turn_sync_job: str | None = None
         self._resize_job: str | None = None
         self._pending_chat_width = 0
         self._rendering_history = False
         self._live_response_mark = "live_response_start"
         self._live_tool_start: int | None = None
-        self._search_matches: list[tuple[str, str]] = []
-        self._search_match_index = -1
-        self._search_job: str | None = None
         self._empty_state_frame: tk.Frame | None = None
         self._disposed = False
         self.columnconfigure(0, weight=1)
@@ -84,15 +67,15 @@ class ConversationView(ttk.Frame):
 
     @property
     def selected_turn_index(self) -> int | None:
-        return self._selected_turn_index
+        return self._turn_navigation.selected
 
     @property
     def turn_count(self) -> int:
-        return len(self._turn_marks)
+        return self._turn_navigation.count
 
     @property
     def search_open(self) -> bool:
-        return bool(self._search_panel.place_info())
+        return self._search.is_open
 
     def content(self) -> str:
         return self._chat_view.get("1.0", "end-1c")
@@ -113,14 +96,10 @@ class ConversationView(ttk.Frame):
         self._scroll_to_bottom()
 
     def previous_turn(self) -> None:
-        if self._turn_marks:
-            current = self._selected_turn_index or len(self._turn_marks)
-            self._jump_to_turn(max(1, current - 1))
+        self._turn_navigation.previous()
 
     def next_turn(self) -> None:
-        if self._turn_marks:
-            current = self._selected_turn_index or 1
-            self._jump_to_turn(min(len(self._turn_marks), current + 1))
+        self._turn_navigation.next()
 
     def jump_to_turn(self, turn_number: int) -> None:
         self._jump_to_turn(turn_number)
@@ -186,15 +165,14 @@ class ConversationView(ttk.Frame):
         self._render_history(messages)
 
     def cancel_pending_callbacks(self) -> None:
-        for attribute in ("_search_job", "_turn_sync_job", "_resize_job"):
-            job = getattr(self, attribute)
-            if job is None:
-                continue
+        self._search.cancel_pending_refresh()
+        self._turn_navigation.cancel_pending_sync()
+        if self._resize_job is not None:
             try:
-                self._root.after_cancel(job)
+                self._root.after_cancel(self._resize_job)
             except tk.TclError:
                 pass
-            setattr(self, attribute, None)
+            self._resize_job = None
 
     def dispose(self) -> None:
         if self._disposed:
@@ -231,10 +209,17 @@ class ConversationView(ttk.Frame):
             spacing3=7,
         )
         self._chat_view.grid(row=0, column=0, sticky="nsew")
+        self._renderer = ConversationRenderer(
+            self._chat_view,
+            is_at_bottom=self._is_chat_at_bottom,
+            selected_turn=lambda: self._turn_navigation.selected,
+            rendering_history=lambda: self._rendering_history,
+            on_layout_changed=self._resize_tool_cards,
+        )
         self._turn_rail = ConversationRail(
             card,
             self._chat_view,
-            self._jump_to_turn,
+            lambda turn_number: self._turn_navigation.jump(turn_number),
         )
         self._bottom_button = tk.Button(
             card,
@@ -262,329 +247,62 @@ class ConversationView(ttk.Frame):
             "<Leave>",
             lambda _event: self._bottom_button.configure(background="#FFFFFF"),
         )
+        self._turn_navigation = TurnNavigationController(
+            self._root,
+            self._chat_view,
+            self._turn_rail,
+            self._bottom_button,
+            self._focus_composer,
+            lambda: self._renderer.user_cards,
+        )
         self._chat_view.configure(yscrollcommand=self._on_chat_yview)
-        self._chat_view.tag_configure(
-            "user_header",
-            foreground=USER_COLOR,
-            font=("Microsoft YaHei UI", 10, "bold"),
-            spacing1=7,
-        )
-        self._chat_view.tag_configure(
-            "user_message_line",
-            justify="right",
-            rmargin=12,
-            spacing1=7,
-            spacing3=5,
-        )
-        self._chat_view.tag_configure(
-            "user_body",
-            foreground=TEXT_PRIMARY,
-            lmargin1=12,
-            lmargin2=12,
-            rmargin=20,
-            spacing3=5,
-        )
-        self._chat_view.tag_configure(
-            "assistant_header",
-            foreground=ASSISTANT_COLOR,
-            font=("Microsoft YaHei UI", 10, "bold"),
-            spacing1=7,
-        )
-        self._chat_view.tag_configure(
-            "assistant_body",
-            foreground=TEXT_PRIMARY,
-            lmargin1=12,
-            lmargin2=12,
-            rmargin=20,
-            spacing3=5,
-        )
-        self._chat_view.tag_configure(
-            "tool_header",
-            foreground=TOOL_COLOR,
-            font=("Microsoft YaHei UI", 10, "bold"),
-            spacing1=8,
-        )
-        self._chat_view.tag_configure(
-            "tool_body",
-            foreground="#6B4B25",
-            background="#FFF8E8",
-            font=("Consolas", 10),
-            lmargin1=12,
-            lmargin2=12,
-            rmargin=20,
-            spacing3=8,
-        )
-        self._chat_view.tag_configure("error", foreground=DANGER, spacing1=8)
-        self._chat_view.tag_configure("muted", foreground=TEXT_SECONDARY)
-        self._chat_view.tag_configure(
-            "md_h1",
-            foreground=TEXT_PRIMARY,
-            font=("Microsoft YaHei UI", 18, "bold"),
-            spacing1=10,
-            spacing3=5,
-        )
-        self._chat_view.tag_configure(
-            "md_h2",
-            foreground=TEXT_PRIMARY,
-            font=("Microsoft YaHei UI", 16, "bold"),
-            spacing1=9,
-            spacing3=4,
-        )
-        self._chat_view.tag_configure(
-            "md_h3",
-            foreground=TEXT_PRIMARY,
-            font=("Microsoft YaHei UI", 14, "bold"),
-            spacing1=8,
-            spacing3=3,
-        )
-        for level in range(4, 7):
-            self._chat_view.tag_configure(
-                f"md_h{level}",
-                foreground=TEXT_PRIMARY,
-                font=("Microsoft YaHei UI", 12, "bold"),
-                spacing1=7,
-                spacing3=3,
-            )
-        self._chat_view.tag_configure(
-            "md_bold",
-            font=("Microsoft YaHei UI", 11, "bold"),
-        )
-        self._chat_view.tag_configure(
-            "md_italic",
-            font=("Microsoft YaHei UI", 11, "italic"),
-        )
-        self._chat_view.tag_configure(
-            "md_inline_code",
-            background="#EEF2F7",
-            foreground="#9D174D",
-            font=("Cascadia Mono", 10),
-        )
-        self._chat_view.tag_configure(
-            "md_link",
-            foreground=ACCENT,
-            underline=True,
-        )
-        self._chat_view.tag_configure(
-            "md_list",
-            lmargin1=30,
-            lmargin2=30,
-            rmargin=20,
-        )
-        self._chat_view.tag_configure(
-            "md_list_marker",
-            foreground=ACCENT,
-            font=("Microsoft YaHei UI", 11, "bold"),
-            lmargin1=16,
-        )
-        self._chat_view.tag_configure(
-            "md_quote",
-            foreground=TEXT_SECONDARY,
-            background="#F8FAFC",
-            lmargin1=25,
-            lmargin2=25,
-            rmargin=24,
-        )
-        self._chat_view.tag_configure(
-            "md_rule",
-            foreground="#CBD5E1",
-            spacing1=7,
-            spacing3=7,
-        )
-        self._chat_view.tag_configure(
-            "md_blank",
-            font=("Microsoft YaHei UI", 3),
-            spacing1=0,
-            spacing3=0,
-        )
-        self._chat_view.tag_configure(
-            "md_emoji",
-            font=(EMOJI_FONT, 11),
-        )
-        emoji_heading_sizes = ((1, 18), (2, 16), (3, 14), (4, 12), (5, 12), (6, 12))
-        for level, font_size in emoji_heading_sizes:
-            self._chat_view.tag_configure(
-                f"md_emoji_h{level}",
-                font=(EMOJI_FONT, font_size),
-            )
-        self._chat_view.tag_configure(
-            "turn_focus",
-            background="#EEF2FF",
-        )
-        self._chat_view.tag_configure(
-            "search_match",
-            background="#FFF3A3",
-            foreground=TEXT_PRIMARY,
-        )
-        self._chat_view.tag_configure(
-            "search_current",
-            background="#F4C44E",
-            foreground="#172033",
-        )
+        configure_conversation_tags(self._chat_view)
         self._chat_view.bind("<Configure>", self._resize_tool_cards)
-        self._build_search_panel(card)
-
-    def _build_search_panel(self, parent: tk.Misc) -> None:
-        self._search_panel = tk.Frame(
-            parent,
-            background="#FFFFFF",
-            highlightbackground=EDITOR_BORDER,
-            highlightthickness=1,
-            borderwidth=0,
+        self._search = ConversationSearchController(
+            self._root,
+            card,
+            self._chat_view,
+            self._focus_composer,
         )
-        self._search_var = tk.StringVar()
-        self._search_status = tk.StringVar(value="输入关键词")
-        self._search_entry = tk.Entry(
-            self._search_panel,
-            textvariable=self._search_var,
-            width=24,
-            font=("Microsoft YaHei UI", 10),
-            background="#F8FAFC",
-            foreground=TEXT_PRIMARY,
-            insertbackground=TEXT_PRIMARY,
-            relief="flat",
-            borderwidth=0,
-        )
-        self._search_entry.pack(side="left", padx=(9, 6), pady=7, ipady=3)
-        tk.Label(
-            self._search_panel,
-            textvariable=self._search_status,
-            width=8,
-            anchor="center",
-            background="#FFFFFF",
-            foreground=TEXT_SECONDARY,
-            font=("Microsoft YaHei UI", 9),
-        ).pack(side="left", padx=(0, 4))
-        for label, command in (
-            ("↑", self._search_previous),
-            ("↓", self._search_next),
-            ("×", self._close_search),
-        ):
-            tk.Button(
-                self._search_panel,
-                text=label,
-                command=command,
-                background="#FFFFFF",
-                activebackground="#EEF2F7",
-                foreground=TEXT_SECONDARY,
-                activeforeground=TEXT_PRIMARY,
-                relief="flat",
-                borderwidth=0,
-                cursor="hand2",
-                font=("Microsoft YaHei UI", 10, "bold"),
-                padx=7,
-                pady=4,
-            ).pack(side="left", padx=(0, 2), pady=4)
-        self._search_entry.bind("<KeyRelease>", self._schedule_search_refresh)
-        self._search_entry.bind("<Return>", self._search_next)
-        self._search_entry.bind("<Shift-Return>", self._search_previous)
-        self._search_entry.bind("<Escape>", self._close_search)
 
-    def _open_search(self, _event: tk.Event | None = None) -> str:
-        if not self._search_panel.place_info():
-            self._search_panel.place(
-                relx=1.0,
-                x=-24,
-                y=12,
-                anchor="ne",
-            )
-            self._search_panel.lift()
-            self._refresh_search_matches()
-        self._search_entry.focus_set()
-        self._search_entry.selection_range(0, "end")
-        return "break"
+    # 下列兼容属性保留既有测试和内部扩展入口，实际状态由搜索控制器维护。
+    @property
+    def _search_var(self) -> tk.StringVar:
+        return self._search.query
 
-    def _close_search(self, _event: tk.Event | None = None) -> str:
-        if self._search_job is not None:
-            self._root.after_cancel(self._search_job)
-            self._search_job = None
-        self._chat_view.tag_remove("search_match", "1.0", "end")
-        self._chat_view.tag_remove("search_current", "1.0", "end")
-        self._search_matches.clear()
-        self._search_match_index = -1
-        self._search_panel.place_forget()
-        self._focus_composer()
-        return "break"
+    @property
+    def _search_status(self) -> tk.StringVar:
+        return self._search.status
 
-    def _schedule_search_refresh(self, _event: tk.Event | None = None) -> None:
-        if _event is not None and _event.keysym in {
-            "Return",
-            "Escape",
-            "F3",
-            "Shift_L",
-            "Shift_R",
-            "Up",
-            "Down",
-        }:
-            return
-        if self._search_job is not None:
-            self._root.after_cancel(self._search_job)
-        self._search_job = self._root.after(120, self._refresh_search_matches)
+    @property
+    def _search_matches(self) -> list[tuple[str, str]]:
+        return self._search.matches
+
+    @property
+    def _search_job(self) -> str | None:
+        return self._search.job
+
+    @property
+    def _search_panel(self) -> tk.Frame:
+        return self._search.panel
+
+    def _open_search(self, event: tk.Event | None = None) -> str:
+        return self._search.open(event)
+
+    def _close_search(self, event: tk.Event | None = None) -> str:
+        return self._search.close(event)
+
+    def _schedule_search_refresh(self, event: tk.Event | None = None) -> None:
+        self._search.schedule_refresh(event)
 
     def _refresh_search_matches(self) -> None:
-        self._search_job = None
-        self._chat_view.tag_remove("search_match", "1.0", "end")
-        self._chat_view.tag_remove("search_current", "1.0", "end")
-        self._search_matches.clear()
-        self._search_match_index = -1
-        query = self._search_var.get().strip()
-        if not query:
-            self._search_status.set("输入关键词")
-            return
+        self._search.refresh()
 
-        count = tk.IntVar(master=self._root)
-        position = "1.0"
-        while len(self._search_matches) < 500:
-            start = self._chat_view.search(
-                query,
-                position,
-                stopindex="end",
-                nocase=True,
-                count=count,
-            )
-            if not start or count.get() <= 0:
-                break
-            finish = f"{start}+{count.get()}c"
-            self._search_matches.append((start, finish))
-            self._chat_view.tag_add("search_match", start, finish)
-            position = finish
+    def _search_next(self, event: tk.Event | None = None) -> str:
+        return self._search.next(event)
 
-        if not self._search_matches:
-            self._search_status.set("无结果")
-            return
-        self._focus_search_match(0)
-
-    def _focus_search_match(self, index: int) -> None:
-        if not self._search_matches:
-            return
-        self._search_match_index = index % len(self._search_matches)
-        start, finish = self._search_matches[self._search_match_index]
-        self._chat_view.tag_remove("search_current", "1.0", "end")
-        self._chat_view.tag_add("search_current", start, finish)
-        self._chat_view.tag_raise("search_current")
-        self._chat_view.see(start)
-        self._search_status.set(
-            f"{self._search_match_index + 1} / {len(self._search_matches)}"
-        )
-
-    def _search_next(self, _event: tk.Event | None = None) -> str:
-        if not self._search_panel.place_info():
-            return self._open_search()
-        if self._search_job is not None:
-            self._root.after_cancel(self._search_job)
-            self._refresh_search_matches()
-        if self._search_matches:
-            self._focus_search_match(self._search_match_index + 1)
-        return "break"
-
-    def _search_previous(self, _event: tk.Event | None = None) -> str:
-        if not self._search_panel.place_info():
-            return self._open_search()
-        if self._search_job is not None:
-            self._root.after_cancel(self._search_job)
-            self._refresh_search_matches()
-        if self._search_matches:
-            self._focus_search_match(self._search_match_index - 1)
-        return "break"
+    def _search_previous(self, event: tk.Event | None = None) -> str:
+        return self._search.previous(event)
 
     def _begin_live_response(self) -> None:
         self._clear_live_response_tracking()
@@ -593,22 +311,10 @@ class ConversationView(ttk.Frame):
         self._live_tool_start = len(self._tool_card_widgets)
 
     def _append(self, content: str, tag: str) -> None:
-        was_at_bottom = self._is_chat_at_bottom()
-        self._chat_view.configure(state="normal")
-        if tag == "assistant_body":
-            self._insert_chat_text(content, (tag,))
-        else:
-            self._chat_view.insert("end", content, tag)
-        self._chat_view.configure(state="disabled")
-        if was_at_bottom:
-            self._chat_view.see("end")
+        self._renderer.append(content, tag)
 
     def _append_message(self, author: str, content: str, role: str) -> None:
-        if role == "user":
-            self._append_user_message(author, content)
-            return
-        self._append(f"{author}\n", f"{role}_header")
-        self._append(f"{content}\n", f"{role}_body")
+        self._renderer.append_message(author, content, role)
 
     def _append_turn_answer_preview(
         self,
@@ -616,31 +322,11 @@ class ConversationView(ttk.Frame):
         *,
         starts_new_message: bool = False,
     ) -> None:
-        if not self._turn_answers or not content:
-            return
-        existing = self._turn_answers[-1]
-        separator = "  " if starts_new_message and existing else ""
-        self._turn_answers[-1] = (existing + separator + content)[:500]
-        if not self._rendering_history:
-            self._turn_rail.update_answer(
-                len(self._turn_answers),
-                self._turn_answers[-1],
-            )
-
-    def _append_user_message(self, author: str, content: str) -> None:
-        self._chat_view.configure(state="normal")
-        card = UserMessageCard(self._chat_view, author, content)
-        start = self._chat_view.index("end-1c")
-        self._chat_view.window_create("end", window=card.frame, padx=8, pady=4)
-        finish = self._chat_view.index("end-1c")
-        self._chat_view.tag_add("user_message_line", start, finish)
-        self._chat_view.insert("end", "\n", "user_message_line")
-        self._chat_view.configure(state="disabled")
-        self._user_message_widgets.append(card)
-        card.set_active(len(self._user_message_widgets) == self._selected_turn_index)
-        if not self._rendering_history:
-            self._resize_tool_cards()
-            self._chat_view.see("end")
+        self._turn_navigation.append_answer(
+            content,
+            starts_new_message=starts_new_message,
+            rendering_history=self._rendering_history,
+        )
 
     def _append_markdown_message(
         self,
@@ -648,244 +334,35 @@ class ConversationView(ttk.Frame):
         content: str,
         role: str,
     ) -> None:
-        self._chat_view.configure(state="normal")
-        self._chat_view.insert("end", f"{author}\n", f"{role}_header")
-        body_tag = f"{role}_body"
-        for block in self._cached_markdown_blocks(content):
-            self._insert_markdown_block(block, body_tag)
-        self._chat_view.configure(state="disabled")
-        if not self._rendering_history:
-            self._chat_view.see("end")
-
-    def _cached_markdown_blocks(self, content: str) -> tuple[MarkdownBlock, ...]:
-        cached = self._markdown_cache.get(content)
-        if cached is not None:
-            return cached
-        blocks = tuple(parse_markdown(content))
-        if len(self._markdown_cache) >= 256:
-            self._markdown_cache.pop(next(iter(self._markdown_cache)))
-        self._markdown_cache[content] = blocks
-        return blocks
-
-    def _insert_markdown_block(
-        self,
-        block: MarkdownBlock,
-        body_tag: str,
-    ) -> None:
-        if block.kind == "blank":
-            self._chat_view.insert("end", "\n", (body_tag, "md_blank"))
-            return
-        if block.kind == "heading":
-            heading_tag = f"md_h{min(6, max(1, block.level))}"
-            self._insert_inline_markdown(
-                block.text,
-                (body_tag, heading_tag),
-                allow_font_styles=False,
-            )
-            self._chat_view.insert("end", "\n", (body_tag, heading_tag))
-            return
-        if block.kind == "rule":
-            self._chat_view.insert("end", "─" * 52 + "\n", "md_rule")
-            return
-        if block.kind == "quote":
-            self._insert_inline_markdown(block.text, (body_tag, "md_quote"))
-            self._chat_view.insert("end", "\n", (body_tag, "md_quote"))
-            return
-        if block.kind == "list_item":
-            self._chat_view.insert(
-                "end",
-                f"{block.marker} ",
-                (body_tag, "md_list_marker"),
-            )
-            self._insert_inline_markdown(block.text, (body_tag, "md_list"))
-            self._chat_view.insert("end", "\n", (body_tag, "md_list"))
-            return
-        if block.kind == "code":
-            self._insert_markdown_code(block.text, block.language)
-            return
-        if block.kind == "table":
-            self._insert_markdown_table(block.headers, block.rows)
-            return
-        self._insert_inline_markdown(block.text, (body_tag,))
-        self._chat_view.insert("end", "\n", body_tag)
-
-    def _insert_inline_markdown(
-        self,
-        content: str,
-        base_tags: tuple[str, ...],
-        *,
-        allow_font_styles: bool = True,
-    ) -> None:
-        style_tags = {
-            "bold": "md_bold",
-            "italic": "md_italic",
-            "code": "md_inline_code",
-            "link": "md_link",
-        }
-        for span in parse_inline(content):
-            tags = base_tags
-            style_tag = style_tags.get(span.style)
-            if style_tag is not None and (
-                allow_font_styles or span.style in {"code", "link"}
-            ):
-                tags = (*base_tags, style_tag)
-            self._insert_chat_text(span.text, tags)
-
-    def _insert_chat_text(
-        self,
-        content: str,
-        tags: tuple[str, ...],
-    ) -> None:
-        emoji_tag = "md_emoji"
-        for level in range(1, 7):
-            if f"md_h{level}" in tags:
-                emoji_tag = f"md_emoji_h{level}"
-                break
-        for segment, is_emoji in _split_emoji_spans(content):
-            segment_tags = (*tags, emoji_tag) if is_emoji else tags
-            self._chat_view.insert("end", segment, segment_tags)
-
-    def _insert_markdown_code(self, content: str, language: str) -> None:
-        card = MarkdownCodeCard(self._chat_view, content, language)
-        self._chat_view.window_create(
-            "end",
-            window=card.frame,
-            padx=8,
-            pady=6,
-        )
-        self._chat_view.insert("end", "\n")
-        self._markdown_code_widgets.append(card)
-        if not self._rendering_history:
-            self._resize_tool_cards()
-
-    def _insert_markdown_table(
-        self,
-        headers: tuple[str, ...],
-        rows: tuple[tuple[str, ...], ...],
-    ) -> None:
-        card = MarkdownTableCard(self._chat_view, headers, rows)
-        self._chat_view.window_create(
-            "end",
-            window=card.frame,
-            padx=8,
-            pady=6,
-        )
-        self._chat_view.insert("end", "\n")
-        self._markdown_table_widgets.append(card)
-        if not self._rendering_history:
-            self._resize_tool_cards()
+        self._renderer.append_markdown_message(author, content, role)
 
     def _register_turn(self, question: str, *, select: bool) -> None:
-        turn_number = len(self._turn_marks) + 1
-        mark_name = f"conversation_turn_{turn_number}"
-        self._chat_view.mark_set(mark_name, "end-1c")
-        self._chat_view.mark_gravity(mark_name, "left")
-        self._turn_marks.append(mark_name)
-        self._turn_questions.append(question)
-        self._turn_answers.append("")
-        if not self._rendering_history:
-            self._refresh_turn_navigation(
-                turn_number if select else self._selected_turn_index
-            )
+        self._turn_navigation.register(
+            question,
+            select=select,
+            rendering_history=self._rendering_history,
+        )
 
     def _reset_turn_navigation(self) -> None:
-        if self._turn_marks:
-            self._chat_view.mark_unset(*self._turn_marks)
-        self._chat_view.tag_remove("turn_focus", "1.0", "end")
-        self._turn_marks.clear()
-        self._turn_questions.clear()
-        self._turn_answers.clear()
-        self._selected_turn_index = None
-        self._refresh_turn_navigation()
+        self._turn_navigation.reset()
 
     def _refresh_turn_navigation(
         self,
         selected_turn: int | None = None,
     ) -> None:
-        total = len(self._turn_marks)
-        if total == 0:
-            self._selected_turn_index = None
-            self._turn_rail.set_turns([], [], None)
-            return
-
-        if selected_turn is None:
-            selected_turn = self._selected_turn_index or total
-        selected_turn = min(total, max(1, selected_turn))
-        self._selected_turn_index = selected_turn
-        self._turn_rail.set_turns(
-            self._turn_questions,
-            self._turn_answers,
-            selected_turn,
-        )
-        for index, card in enumerate(self._user_message_widgets, start=1):
-            card.set_active(index == selected_turn)
+        self._turn_navigation.refresh(selected_turn)
 
     def _on_chat_yview(self, first: str, last: str) -> None:
-        self._chat_view.vbar.set(first, last)
-        if float(last) < 0.995:
-            if not self._bottom_button.winfo_ismapped():
-                self._bottom_button.place(
-                    relx=1.0,
-                    rely=1.0,
-                    x=-30,
-                    y=-20,
-                    anchor="se",
-                )
-                self._bottom_button.lift()
-        else:
-            self._bottom_button.place_forget()
-        if not self._turn_marks:
-            return
-        if self._turn_sync_job is not None:
-            self._root.after_cancel(self._turn_sync_job)
-        self._turn_sync_job = self._root.after_idle(
-            self._sync_turn_navigation_to_view
-        )
+        self._turn_navigation.on_yview(first, last)
 
     def _is_chat_at_bottom(self) -> bool:
-        return self._chat_view.yview()[1] >= 0.995
+        return self._turn_navigation.is_at_bottom()
 
     def _scroll_to_bottom(self) -> None:
-        self._chat_view.see("end")
-        self._bottom_button.place_forget()
-        if self._turn_marks:
-            self._refresh_turn_navigation(len(self._turn_marks))
-        self._focus_composer()
-
-    def _sync_turn_navigation_to_view(self) -> None:
-        self._turn_sync_job = None
-        if not self._turn_marks:
-            return
-
-        _first, last = self._chat_view.yview()
-        if last >= 0.999:
-            visible_turn = len(self._turn_marks)
-        else:
-            viewport_height = max(1, self._chat_view.winfo_height())
-            anchor = self._chat_view.index(f"@0,{int(viewport_height * 0.28)}")
-            visible_turn = 1
-            for number, mark_name in enumerate(self._turn_marks, start=1):
-                if self._chat_view.compare(mark_name, "<=", anchor):
-                    visible_turn = number
-                else:
-                    break
-
-        if visible_turn != self._selected_turn_index:
-            self._refresh_turn_navigation(visible_turn)
+        self._turn_navigation.scroll_to_bottom()
 
     def _jump_to_turn(self, turn_number: int) -> None:
-        if not 1 <= turn_number <= len(self._turn_marks):
-            return
-        self._refresh_turn_navigation(turn_number)
-        mark_name = self._turn_marks[turn_number - 1]
-        self._chat_view.tag_remove("turn_focus", "1.0", "end")
-        self._chat_view.tag_add(
-            "turn_focus",
-            mark_name,
-            f"{mark_name} lineend+1c",
-        )
-        self._chat_view.tag_raise("turn_focus")
-        self._chat_view.yview(mark_name)
+        self._turn_navigation.jump(turn_number)
 
     def _create_tool_card(
         self,
@@ -945,23 +422,7 @@ class ConversationView(ttk.Frame):
         card_width = max(260, width - 70)
         for card in self._tool_card_widgets:
             card.set_width(card_width)
-        for card in self._markdown_code_widgets:
-            card.set_width(card_width)
-        pending_tables: list[MarkdownTableCard] = []
-        for card in self._markdown_table_widgets:
-            if card.set_width(card_width, defer=True):
-                pending_tables.append(card)
-        pending_users: list[UserMessageCard] = []
-        for card in self._user_message_widgets:
-            if card.set_max_width(width - 48, defer=True):
-                pending_users.append(card)
-        if pending_tables or pending_users:
-            # 所有 wraplength 先一次性写入，避免每张卡片单独刷新整个 Tk 布局树。
-            self._root.update_idletasks()
-            for card in pending_tables:
-                card.finalize_width()
-            for card in pending_users:
-                card.finalize_size()
+        self._renderer.resize(width)
 
     def _clear_tool_cards(self) -> None:
         if self._empty_state_frame is not None:
@@ -969,17 +430,9 @@ class ConversationView(ttk.Frame):
             self._empty_state_frame = None
         for card in self._tool_card_widgets:
             card.destroy()
-        for card in self._markdown_code_widgets:
-            card.destroy()
-        for card in self._markdown_table_widgets:
-            card.destroy()
-        for card in self._user_message_widgets:
-            card.destroy()
         self._tool_cards.clear()
         self._tool_card_widgets.clear()
-        self._markdown_code_widgets.clear()
-        self._markdown_table_widgets.clear()
-        self._user_message_widgets.clear()
+        self._renderer.clear()
 
     def _show_empty_state(self) -> None:
         if self._empty_state_frame is not None:
@@ -1157,8 +610,8 @@ class ConversationView(ttk.Frame):
                     if content:
                         self._append_turn_answer_preview(
                             str(content),
-                            starts_new_message=bool(
-                                self._turn_answers and self._turn_answers[-1]
+                            starts_new_message=(
+                                self._turn_navigation.has_current_answer
                             ),
                         )
                         self._append_markdown_message(
@@ -1175,7 +628,7 @@ class ConversationView(ttk.Frame):
                         )
         finally:
             self._rendering_history = False
-        if not self._turn_marks:
+        if self._turn_navigation.count == 0:
             self._show_empty_state()
         self._resize_tool_cards()
         self._chat_view.see("end")

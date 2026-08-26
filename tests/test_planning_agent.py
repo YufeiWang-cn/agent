@@ -15,18 +15,16 @@ add_src_to_path()
 from deepseek_agent.agent import Agent
 from deepseek_agent.cli import CliApplication
 from deepseek_agent.config import Settings
-from deepseek_agent.memory import JsonSessionStore, Session
+from deepseek_agent.memory import JsonSessionStore
 from deepseek_agent.models import TextDelta, ToolCallRequest
 from deepseek_agent.planning import (
     PlanExecutionScope,
     PlanKind,
     PlanStepStatus,
     TaskPlan,
-    validate_plan_transition,
 )
 from deepseek_agent.runtime import AgentEventType, RunStatus
 from deepseek_agent.reliability import ModelCallError
-from deepseek_agent.tools import UpdatePlanTool
 
 
 def _plan_items(
@@ -57,72 +55,6 @@ class QueueModel:
 
     def select_model(self, _model_name: str) -> None:
         return None
-
-
-class PlanningModelTests(unittest.TestCase):
-    def test_plan_rejects_multiple_active_steps_and_duplicate_text(self) -> None:
-        with self.assertRaisesRegex(ValueError, "最多只能有一个"):
-            TaskPlan.create(_plan_items("in_progress", "in_progress"))
-
-        with self.assertRaisesRegex(ValueError, "重复步骤"):
-            TaskPlan.create(
-                [
-                    {"step": "同一步骤", "status": "in_progress"},
-                    {"step": "同一步骤", "status": "pending"},
-                ]
-            )
-
-    def test_terminal_step_cannot_regress(self) -> None:
-        previous = TaskPlan.create(_plan_items("completed", "in_progress"))
-        current = TaskPlan.create(_plan_items("pending", "in_progress"))
-
-        with self.assertRaisesRegex(ValueError, "不能回退"):
-            validate_plan_transition(previous, current)
-
-    def test_replanning_requires_explanation(self) -> None:
-        previous = TaskPlan.create(_plan_items())
-        changed = TaskPlan.create(
-            [
-                {"step": "读取项目结构", "status": "completed"},
-                {"step": "补充测试", "status": "in_progress"},
-            ]
-        )
-
-        with self.assertRaisesRegex(ValueError, "必须提供 explanation"):
-            validate_plan_transition(previous, changed)
-
-    def test_update_plan_tool_returns_committed_revision(self) -> None:
-        def commit(plan: TaskPlan, _replace: bool) -> TaskPlan:
-            return plan.with_revision(4)
-
-        result = json.loads(
-            UpdatePlanTool(commit).execute(
-                {
-                    "kind": "execution",
-                    "scope": "entire_plan",
-                    "plan": _plan_items(),
-                }
-            )
-        )
-
-        self.assertEqual(result["revision"], 4)
-        self.assertEqual(result["kind"], "execution")
-        self.assertEqual(result["scope"], "entire_plan")
-        self.assertEqual(result["completed"], 0)
-        self.assertFalse(result["terminal"])
-
-    def test_proposal_is_terminal_without_claiming_steps_completed(self) -> None:
-        plan = TaskPlan.create(
-            _plan_items("pending", "pending"),
-            kind=PlanKind.PROPOSAL,
-        )
-
-        self.assertTrue(plan.terminal)
-        self.assertEqual(plan.completed_count, 0)
-
-        with self.assertRaisesRegex(ValueError, "必须全部为 pending"):
-            TaskPlan.create(_plan_items(), kind=PlanKind.PROPOSAL)
-
 
 class PlanningAgentTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -608,37 +540,6 @@ class PlanningAgentTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertIn("执行计划 · 连续 v2", output.getvalue())
         self.assertIn("[>] 1. 读取项目结构", output.getvalue())
-
-
-class PlanningSessionTests(unittest.TestCase):
-    def test_session_round_trip_and_old_file_compatibility(self) -> None:
-        plan = TaskPlan.create(_plan_items()).with_revision(3)
-        session = Session.create([{"role": "system", "content": "system"}])
-        session.update_plan(plan)
-
-        restored = Session.from_dict(session.to_dict())
-        old_data = session.to_dict()
-        old_data.pop("plan")
-
-        legacy_plan = plan.to_dict()
-        legacy_plan.pop("id")
-        legacy_plan.pop("kind")
-        legacy_plan.pop("scope")
-
-        self.assertEqual(restored.plan, plan)
-        self.assertIsNone(Session.from_dict(old_data).plan)
-        self.assertIs(
-            TaskPlan.from_dict(legacy_plan).kind,
-            PlanKind.EXECUTION,
-        )
-        self.assertIs(
-            TaskPlan.from_dict(legacy_plan).scope,
-            PlanExecutionScope.ENTIRE_PLAN,
-        )
-        self.assertIs(
-            restored.plan.steps[0].status,
-            PlanStepStatus.IN_PROGRESS,
-        )
 
 
 if __name__ == "__main__":

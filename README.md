@@ -4,12 +4,17 @@
 
 ## 核心结构
 
-- `agent.py`：编排模型、工具、上下文和持久化边界。
+- `agent.py`：编排模型、工具、上下文和单轮执行边界。
+- `memory/coordinator.py`：协调会话持久化、项目归属和事务式状态切换。
 - `plan_runtime.py`：维护计划快照、单步目标和运行时计划提示。
 - `tool_execution.py`：统一处理工具解析、确认、执行和结果记录。
+- `tools/command_policy.py`：审查受控命令，并判定副作用和确认策略。
+- `tools/patch_transaction.py`：准备文件补丁，并以补偿事务提交整批修改。
 - `workspace/guard.py`：限制文件访问范围并提供原子文本写入。
 - `journal.py`：记录不含敏感正文的运行事件，并检测崩溃残留。
 - `ui/chat_runner.py`：隔离后台 Agent 调用与 GUI 事件映射。
+- `ui/conversation_view.py`：组合搜索、轮次导航、消息渲染和卡片组件。
+- `ui/cards.py`：兼容导出按用途拆分后的对话卡片组件。
 - `ui/tk_app.py`：维护 Tk 主线程、窗口状态和界面交互。
 
 项目把完整会话历史、模型请求上下文和外部副作用分开管理。模型请求只携带预算内的完整轮次；已执行工具造成的外部变化不会被伪装成回滚成功，相关记录会优先保存并在下次启动时参与恢复检查。

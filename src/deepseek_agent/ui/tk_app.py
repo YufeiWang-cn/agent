@@ -23,16 +23,10 @@ from .formatting import _conversation_preview
 from .sidebar import ProjectSessionSidebar
 from .theme import (
     ACCENT,
-    ACCENT_HOVER,
     APP_BACKGROUND,
-    CARD_BACKGROUND,
-    DANGER,
     EDITOR_BORDER,
-    SIDEBAR_BACKGROUND,
-    SIDEBAR_PANEL,
-    SIDEBAR_TEXT,
     TEXT_PRIMARY,
-    TEXT_SECONDARY,
+    configure_app_styles,
 )
 
 
@@ -144,135 +138,7 @@ class AgentApp:
         self._root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _configure_styles(self) -> None:
-        style = ttk.Style(self._root)
-        if "clam" in style.theme_names():
-            style.theme_use("clam")
-
-        default_font = ("Microsoft YaHei UI", 10)
-        style.configure(".", font=default_font)
-        style.configure("App.TFrame", background=APP_BACKGROUND)
-        style.configure("Card.TFrame", background=CARD_BACKGROUND)
-        style.configure("Sidebar.TFrame", background=SIDEBAR_BACKGROUND)
-        style.configure(
-            "Title.TLabel",
-            background=APP_BACKGROUND,
-            foreground=TEXT_PRIMARY,
-            font=("Microsoft YaHei UI", 15, "bold"),
-        )
-        style.configure(
-            "DialogTitle.TLabel",
-            background=APP_BACKGROUND,
-            foreground=TEXT_PRIMARY,
-            font=("Microsoft YaHei UI", 15, "bold"),
-        )
-        style.configure(
-            "Section.TLabel",
-            background=APP_BACKGROUND,
-            foreground=TEXT_PRIMARY,
-            font=("Microsoft YaHei UI", 10, "bold"),
-        )
-        style.configure(
-            "Body.TLabel",
-            background=APP_BACKGROUND,
-            foreground=TEXT_SECONDARY,
-        )
-        style.configure(
-            "CardTitle.TLabel",
-            background=CARD_BACKGROUND,
-            foreground=TEXT_PRIMARY,
-            font=("Microsoft YaHei UI", 12, "bold"),
-        )
-        style.configure(
-            "CardMuted.TLabel",
-            background=CARD_BACKGROUND,
-            foreground=TEXT_SECONDARY,
-        )
-        style.configure(
-            "SidebarTitle.TLabel",
-            background=SIDEBAR_BACKGROUND,
-            foreground=TEXT_PRIMARY,
-            font=("Microsoft YaHei UI", 14, "bold"),
-        )
-        style.configure(
-            "SidebarMuted.TLabel",
-            background=SIDEBAR_BACKGROUND,
-            foreground=TEXT_SECONDARY,
-        )
-        style.configure(
-            "Accent.TButton",
-            background=ACCENT,
-            foreground="#FFFFFF",
-            borderwidth=0,
-            padding=(14, 8),
-            font=("Microsoft YaHei UI", 10, "bold"),
-        )
-        style.map(
-            "Accent.TButton",
-            background=[("active", ACCENT_HOVER), ("disabled", "#A5B4D8")],
-            foreground=[("disabled", "#EEF2FF")],
-        )
-        style.configure(
-            "Secondary.TButton",
-            background="#E8EDF5",
-            foreground=TEXT_PRIMARY,
-            borderwidth=0,
-            padding=(12, 7),
-        )
-        style.map("Secondary.TButton", background=[("active", "#DCE3EE")])
-        style.configure(
-            "Header.TButton",
-            background="#E8EDF5",
-            foreground=TEXT_PRIMARY,
-            borderwidth=0,
-            padding=(5, 3),
-        )
-        style.map("Header.TButton", background=[("active", "#DCE3EE")])
-        style.configure(
-            "Danger.TButton",
-            background="#FCE8EC",
-            foreground=DANGER,
-            borderwidth=0,
-            padding=(12, 7),
-        )
-        style.map("Danger.TButton", background=[("active", "#F8D4DC")])
-        style.configure(
-            "Sidebar.TButton",
-            background=SIDEBAR_PANEL,
-            foreground=SIDEBAR_TEXT,
-            borderwidth=0,
-            padding=(10, 7),
-        )
-        style.map(
-            "Sidebar.TButton",
-            background=[("active", "#DFE2E8"), ("disabled", "#F2F3F5")],
-            foreground=[("disabled", "#A0A5AF")],
-        )
-        style.configure(
-            "Sessions.Treeview",
-            background=SIDEBAR_BACKGROUND,
-            fieldbackground=SIDEBAR_BACKGROUND,
-            foreground=SIDEBAR_TEXT,
-            borderwidth=0,
-            rowheight=34,
-        )
-        style.map(
-            "Sessions.Treeview",
-            background=[("selected", "#E3E6EC")],
-            foreground=[("selected", TEXT_PRIMARY)],
-        )
-        style.configure(
-            "Projects.Treeview",
-            background=SIDEBAR_BACKGROUND,
-            fieldbackground=SIDEBAR_BACKGROUND,
-            foreground=SIDEBAR_TEXT,
-            borderwidth=0,
-            rowheight=30,
-        )
-        style.map(
-            "Projects.Treeview",
-            background=[("selected", "#E3E6EC")],
-            foreground=[("selected", TEXT_PRIMARY)],
-        )
+        configure_app_styles(self._root)
 
     def _build_layout(self) -> None:
         shell = ttk.Frame(self._root, style="App.TFrame")
@@ -617,110 +483,108 @@ class AgentApp:
         self._drain_job = self._root.after(delay, self._drain_events)
 
     def _handle_event(self, event_name: str, payload: Any) -> None:
-        if event_name == "text":
-            starts_new_message = not self._assistant_open
-            if not self._assistant_open:
-                self._conversation.append("DeepSeek\n", "assistant_header")
-                self._assistant_open = True
-            content = str(payload)
-            self._stream_character_count += len(content)
-            self._conversation.append_turn_answer_preview(
-                content,
-                starts_new_message=starts_new_message,
-            )
-            self._conversation.append(content, "assistant_body")
-            return
+        """把后台事件分派给单一职责的界面处理方法。"""
+        handlers = {
+            "text": self._handle_text_event,
+            "tool_call": self._handle_tool_call_event,
+            "tool_result": self._handle_tool_result_event,
+            "plan_updated": self._handle_plan_updated_event,
+            "confirmation": self._handle_confirmation_event,
+            "done": self._handle_done_event,
+            "step_limit_reached": self._handle_step_limit_event,
+            "waiting_user": self._handle_waiting_user_event,
+            "cancelled": self._handle_cancelled_event,
+            "error": self._handle_error_event,
+        }
+        handler = handlers.get(event_name)
+        if handler is not None:
+            handler(payload)
 
-        if event_name == "tool_call":
-            request: ToolCallRequest = payload
-            self._finish_assistant_line()
-            self._conversation.create_tool_card(
-                request.id,
-                request.name,
-                request.arguments,
-            )
-            self._set_activity_phase(f"执行工具 {request.name}")
-            return
+    def _handle_text_event(self, payload: Any) -> None:
+        starts_new_message = not self._assistant_open
+        if not self._assistant_open:
+            self._conversation.append("DeepSeek\n", "assistant_header")
+            self._assistant_open = True
+        content = str(payload)
+        self._stream_character_count += len(content)
+        self._conversation.append_turn_answer_preview(
+            content,
+            starts_new_message=starts_new_message,
+        )
+        self._conversation.append(content, "assistant_body")
 
-        if event_name == "tool_result":
-            request, result = payload
-            self._conversation.complete_tool_card(
-                request.id,
-                request.name,
-                request.arguments,
-                result,
-            )
+    def _handle_tool_call_event(self, payload: Any) -> None:
+        request: ToolCallRequest = payload
+        self._finish_assistant_line()
+        self._conversation.create_tool_card(
+            request.id,
+            request.name,
+            request.arguments,
+        )
+        self._set_activity_phase(f"执行工具 {request.name}")
+
+    def _handle_tool_result_event(self, payload: Any) -> None:
+        request, result = payload
+        self._conversation.complete_tool_card(
+            request.id,
+            request.name,
+            request.arguments,
+            result,
+        )
+        self._set_activity_phase("继续生成")
+
+    def _handle_plan_updated_event(self, payload: Any) -> None:
+        self._conversation.show_plan(payload)
+
+    def _handle_confirmation_event(self, payload: Any) -> None:
+        self._set_activity_phase("等待确认")
+        self._show_confirmation(payload)
+        if self._is_busy():
             self._set_activity_phase("继续生成")
-            return
 
-        if event_name == "plan_updated":
-            self._conversation.show_plan(payload)
-            return
+    def _handle_done_event(self, _payload: Any) -> None:
+        restore_turn = (
+            self._conversation.selected_turn_index
+            if not self._conversation.is_at_bottom()
+            else None
+        )
+        self._commit_finished_turn("就绪")
+        if restore_turn is not None:
+            self._schedule_turn_restore(restore_turn)
 
-        if event_name == "confirmation":
-            self._set_activity_phase("等待确认")
-            self._show_confirmation(payload)
-            if self._is_busy():
-                self._set_activity_phase("继续生成")
-            return
+    def _handle_step_limit_event(self, payload: Any) -> None:
+        outcome: TurnOutcome = payload
+        self._commit_finished_turn("未完成")
+        self._status.set(
+            f"已达到执行步数上限，共执行 {outcome.steps_completed} 步。"
+        )
 
-        if event_name == "done":
-            restore_turn = (
-                self._conversation.selected_turn_index
-                if not self._conversation.is_at_bottom()
-                else None
-            )
-            self._finish_turn("就绪")
-            if not self._render_completed_turn():
-                self._render_history()
-            self._sidebar.refresh(select_session_id=self._agent.session_id)
-            self._update_header()
-            self._active_prompt = None
-            if restore_turn is not None:
-                self._schedule_turn_restore(restore_turn)
-            return
+    def _handle_waiting_user_event(self, _payload: Any) -> None:
+        self._commit_finished_turn("等待输入")
+        self._status.set("执行计划已暂停，请根据 Agent 的问题继续回复。")
 
-        if event_name == "step_limit_reached":
-            outcome: TurnOutcome = payload
-            self._finish_assistant_line()
-            self._finish_turn("未完成")
-            if not self._render_completed_turn():
-                self._render_history()
-            self._sidebar.refresh(select_session_id=self._agent.session_id)
-            self._update_header()
-            self._active_prompt = None
-            self._status.set(
-                f"已达到执行步数上限，共执行 {outcome.steps_completed} 步。"
-            )
-            return
+    def _handle_cancelled_event(self, payload: Any) -> None:
+        _message, tool_records_preserved = payload
+        self._finish_turn("已停止")
+        self._reconcile_interrupted_turn(tool_records_preserved)
+        if not tool_records_preserved:
+            self._status.set("已停止，问题已放回输入框")
 
-        if event_name == "waiting_user":
-            self._finish_assistant_line()
-            self._finish_turn("等待输入")
-            if not self._render_completed_turn():
-                self._render_history()
-            self._sidebar.refresh(select_session_id=self._agent.session_id)
-            self._update_header()
-            self._active_prompt = None
-            self._status.set("执行计划已暂停，请根据 Agent 的问题继续回复。")
-            return
+    def _handle_error_event(self, payload: Any) -> None:
+        message, history_preserved = payload
+        self._finish_turn("调用失败")
+        self._reconcile_interrupted_turn(history_preserved)
+        summary = _conversation_preview(str(message), limit=52)
+        self._status.set(f"调用失败：{summary}")
 
-        if event_name == "cancelled":
-            message, tool_records_preserved = payload
-            self._finish_assistant_line()
-            self._finish_turn("已停止")
-            self._reconcile_interrupted_turn(tool_records_preserved)
-            if not tool_records_preserved:
-                self._status.set("已停止，问题已放回输入框")
-            return
-
-        if event_name == "error":
-            message, history_preserved = payload
-            self._finish_assistant_line()
-            self._finish_turn("调用失败")
-            self._reconcile_interrupted_turn(history_preserved)
-            summary = _conversation_preview(str(message), limit=52)
-            self._status.set(f"调用失败：{summary}")
+    def _commit_finished_turn(self, status: str) -> None:
+        """完成已持久化轮次，并统一刷新历史、侧栏和标题。"""
+        self._finish_turn(status)
+        if not self._render_completed_turn():
+            self._render_history()
+        self._sidebar.refresh(select_session_id=self._agent.session_id)
+        self._update_header()
+        self._active_prompt = None
 
     def _reconcile_interrupted_turn(self, history_preserved: bool) -> None:
         prompt = self._active_prompt

@@ -20,6 +20,64 @@ DEFAULT_MAX_COMMAND_OUTPUT = 50_000
 DEFAULT_MAX_AGENT_STEPS = 12
 
 
+def _read_int_env(
+    name: str,
+    default: int,
+    *,
+    minimum: int,
+    error_message: str,
+) -> int:
+    """读取整数环境变量，并使用统一规则校验允许的下限。"""
+    try:
+        value = int(os.getenv(name, str(default)).strip())
+    except ValueError as error:
+        raise RuntimeError(error_message) from error
+    if value < minimum:
+        raise RuntimeError(error_message)
+    return value
+
+
+def _read_float_env(
+    name: str,
+    default: float,
+    *,
+    minimum: float,
+    allow_minimum: bool,
+    error_message: str,
+) -> float:
+    """读取浮点环境变量，并明确边界值是否可以使用。"""
+    try:
+        value = float(os.getenv(name, str(default)).strip())
+    except ValueError as error:
+        raise RuntimeError(error_message) from error
+    invalid = value < minimum if allow_minimum else value <= minimum
+    if invalid:
+        raise RuntimeError(error_message)
+    return value
+
+
+def _read_log_level() -> str:
+    """读取标准日志级别，并拒绝 logging 不识别的自定义值。"""
+    value = os.getenv("AGENT_LOG_LEVEL", DEFAULT_LOG_LEVEL).strip().upper()
+    if value not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+        raise RuntimeError("AGENT_LOG_LEVEL 是无效的日志级别。")
+    return value
+
+
+def _resolve_workspace_root() -> Path:
+    """解析工作区真实路径，确保后续安全检查使用稳定目录。"""
+    workspace_root = Path(
+        os.getenv("AGENT_WORKSPACE", str(PROJECT_ROOT)).strip()
+    ).expanduser()
+    try:
+        resolved = workspace_root.resolve(strict=True)
+    except OSError as error:
+        raise RuntimeError(f"AGENT_WORKSPACE 不可用：{workspace_root}") from error
+    if not resolved.is_dir():
+        raise RuntimeError(f"AGENT_WORKSPACE 不是文件夹：{resolved}")
+    return resolved
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     """保存已经校验的不可变配置，避免运行期间意外修改关键参数。"""
@@ -47,105 +105,57 @@ class Settings:
         if not api_key:
             raise RuntimeError("请先在 .env 中设置 DEEPSEEK_API_KEY。")
 
-        raw_max_context_tokens = os.getenv(
+        max_context_tokens = _read_int_env(
             "DEEPSEEK_MAX_CONTEXT_TOKENS",
-            str(DEFAULT_MAX_CONTEXT_TOKENS),
-        ).strip()
-        try:
-            max_context_tokens = int(raw_max_context_tokens)
-        except ValueError as error:
-            raise RuntimeError(
-                "DEEPSEEK_MAX_CONTEXT_TOKENS 必须是正整数。"
-            ) from error
-        if max_context_tokens <= 0:
-            raise RuntimeError("DEEPSEEK_MAX_CONTEXT_TOKENS 必须是正整数。")
-
-        try:
-            request_timeout = float(
-                os.getenv(
-                    "DEEPSEEK_REQUEST_TIMEOUT",
-                    str(DEFAULT_REQUEST_TIMEOUT),
-                ).strip()
-            )
-            max_retries = int(
-                os.getenv(
-                    "DEEPSEEK_MAX_RETRIES",
-                    str(DEFAULT_MAX_RETRIES),
-                ).strip()
-            )
-            retry_base_delay = float(
-                os.getenv(
-                    "DEEPSEEK_RETRY_BASE_DELAY",
-                    str(DEFAULT_RETRY_BASE_DELAY),
-                ).strip()
-            )
-        except ValueError as error:
-            raise RuntimeError("模型超时和重试配置必须是数字。") from error
-
-        if request_timeout <= 0:
-            raise RuntimeError("DEEPSEEK_REQUEST_TIMEOUT 必须大于 0。")
-        if max_retries < 0:
-            raise RuntimeError("DEEPSEEK_MAX_RETRIES 不能小于 0。")
-        if retry_base_delay < 0:
-            raise RuntimeError("DEEPSEEK_RETRY_BASE_DELAY 不能小于 0。")
-
-        log_level = os.getenv("AGENT_LOG_LEVEL", DEFAULT_LOG_LEVEL).strip().upper()
-        if log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
-            raise RuntimeError("AGENT_LOG_LEVEL 是无效的日志级别。")
-
-        workspace_root = Path(
-            os.getenv("AGENT_WORKSPACE", str(PROJECT_ROOT)).strip()
-        ).expanduser()
-        try:
-            workspace_root = workspace_root.resolve(strict=True)
-        except OSError as error:
-            raise RuntimeError(f"AGENT_WORKSPACE 不可用：{workspace_root}") from error
-        if not workspace_root.is_dir():
-            raise RuntimeError(f"AGENT_WORKSPACE 不是文件夹：{workspace_root}")
-
-        try:
-            max_file_size = int(
-                os.getenv(
-                    "AGENT_MAX_FILE_SIZE",
-                    str(DEFAULT_MAX_FILE_SIZE),
-                ).strip()
-            )
-        except ValueError as error:
-            raise RuntimeError("AGENT_MAX_FILE_SIZE 必须是正整数。") from error
-        if max_file_size <= 0:
-            raise RuntimeError("AGENT_MAX_FILE_SIZE 必须是正整数。")
-
-        try:
-            command_timeout = float(
-                os.getenv(
-                    "AGENT_COMMAND_TIMEOUT",
-                    str(DEFAULT_COMMAND_TIMEOUT),
-                ).strip()
-            )
-            max_command_output = int(
-                os.getenv(
-                    "AGENT_MAX_COMMAND_OUTPUT",
-                    str(DEFAULT_MAX_COMMAND_OUTPUT),
-                ).strip()
-            )
-        except ValueError as error:
-            raise RuntimeError("命令超时和输出限制必须是数字。") from error
-        if command_timeout <= 0:
-            raise RuntimeError("AGENT_COMMAND_TIMEOUT 必须大于 0。")
-        if max_command_output <= 0:
-            raise RuntimeError("AGENT_MAX_COMMAND_OUTPUT 必须是正整数。")
-
-        try:
-            max_agent_steps = int(
-                os.getenv(
-                    "AGENT_MAX_STEPS",
-                    str(DEFAULT_MAX_AGENT_STEPS),
-                ).strip()
-            )
-        except ValueError as error:
-            raise RuntimeError("AGENT_MAX_STEPS 必须是正整数。") from error
-        if max_agent_steps <= 0:
-            raise RuntimeError("AGENT_MAX_STEPS 必须是正整数。")
+            DEFAULT_MAX_CONTEXT_TOKENS,
+            minimum=1,
+            error_message="DEEPSEEK_MAX_CONTEXT_TOKENS 必须是正整数。",
+        )
+        request_timeout = _read_float_env(
+            "DEEPSEEK_REQUEST_TIMEOUT",
+            DEFAULT_REQUEST_TIMEOUT,
+            minimum=0,
+            allow_minimum=False,
+            error_message="DEEPSEEK_REQUEST_TIMEOUT 必须大于 0。",
+        )
+        max_retries = _read_int_env(
+            "DEEPSEEK_MAX_RETRIES",
+            DEFAULT_MAX_RETRIES,
+            minimum=0,
+            error_message="DEEPSEEK_MAX_RETRIES 不能小于 0。",
+        )
+        retry_base_delay = _read_float_env(
+            "DEEPSEEK_RETRY_BASE_DELAY",
+            DEFAULT_RETRY_BASE_DELAY,
+            minimum=0,
+            allow_minimum=True,
+            error_message="DEEPSEEK_RETRY_BASE_DELAY 不能小于 0。",
+        )
+        max_file_size = _read_int_env(
+            "AGENT_MAX_FILE_SIZE",
+            DEFAULT_MAX_FILE_SIZE,
+            minimum=1,
+            error_message="AGENT_MAX_FILE_SIZE 必须是正整数。",
+        )
+        command_timeout = _read_float_env(
+            "AGENT_COMMAND_TIMEOUT",
+            DEFAULT_COMMAND_TIMEOUT,
+            minimum=0,
+            allow_minimum=False,
+            error_message="AGENT_COMMAND_TIMEOUT 必须大于 0。",
+        )
+        max_command_output = _read_int_env(
+            "AGENT_MAX_COMMAND_OUTPUT",
+            DEFAULT_MAX_COMMAND_OUTPUT,
+            minimum=1,
+            error_message="AGENT_MAX_COMMAND_OUTPUT 必须是正整数。",
+        )
+        max_agent_steps = _read_int_env(
+            "AGENT_MAX_STEPS",
+            DEFAULT_MAX_AGENT_STEPS,
+            minimum=1,
+            error_message="AGENT_MAX_STEPS 必须是正整数。",
+        )
 
         return cls(
             api_key=api_key,
@@ -158,8 +168,8 @@ class Settings:
             request_timeout=request_timeout,
             max_retries=max_retries,
             retry_base_delay=retry_base_delay,
-            log_level=log_level,
-            workspace_root=workspace_root,
+            log_level=_read_log_level(),
+            workspace_root=_resolve_workspace_root(),
             max_file_size=max_file_size,
             command_timeout=command_timeout,
             max_command_output=max_command_output,

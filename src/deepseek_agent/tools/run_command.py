@@ -3,13 +3,10 @@
 import json
 import os
 import signal
-import shutil
 import subprocess
-import sys
 import tempfile
 import time
-from dataclasses import dataclass
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path
 from typing import BinaryIO
 
 from ..workspace import WorkspaceAccessError, WorkspaceGuard
@@ -20,70 +17,15 @@ from .base import (
     ToolExecutionContext,
     ToolExecutionError,
 )
+from .command_policy import (
+    CommandPolicy,
+    CommandPolicyResolver,
+    MAX_COMMAND_ARGUMENTS,
+)
 
 
-MAX_COMMAND_ARGUMENTS = 64
-MAX_ARGUMENT_LENGTH = 4_096
 POLL_INTERVAL_SECONDS = 0.1
-# 这些标记即使出现在参数数组中也会被直接拒绝。
-# 虽然 ``shell=False`` 不会解释它们，但提前拒绝可以防止未来重构意外扩大执行能力。
-SHELL_OPERATORS = frozenset(
-    {"|", "||", "&", "&&", ";", ">", ">>", "<", "<<"}
-)
-SHELL_EXECUTABLES = frozenset(
-    {"cmd", "powershell", "pwsh", "bash", "sh", "zsh", "fish", "wsl"}
-)
 SENSITIVE_ENV_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
-# 只有这里列出的 Git 查询可以跳过人工确认。
-# 扩充本集合前，必须确认相应子命令及其允许选项不会写文件、启动外部程序或访问工作区外路径。
-READ_ONLY_GIT_COMMANDS = frozenset(
-    {"status", "diff", "log", "show", "rev-parse", "ls-files", "grep", "describe"}
-)
-CONFIRMED_GIT_COMMANDS = frozenset(
-    {
-        "add",
-        "restore",
-        "switch",
-        "checkout",
-        "commit",
-        "merge",
-        "rebase",
-        "cherry-pick",
-        "revert",
-        "stash",
-        "tag",
-        "fetch",
-        "pull",
-        "push",
-    }
-)
-# 高破坏性命令不会在确认后放行，因为一次误确认就可能永久丢失改动。
-FORBIDDEN_GIT_COMMANDS = frozenset({"clean", "reset"})
-# 部分看似只读的子命令可以借助这些选项写文件、切换仓库或启动外部辅助程序。
-# 因此，不能只根据子命令名称判断安全性。
-FORBIDDEN_GIT_OPTIONS = (
-    "-C",
-    "-c",
-    "--git-dir",
-    "--work-tree",
-    "--namespace",
-    "--config-env",
-    "--exec-path",
-    "--output",
-    "--ext-diff",
-    "--textconv",
-    "--no-index",
-    "--open-files-in-pager",
-)
-
-
-@dataclass(frozen=True, slots=True)
-class CommandPolicy:
-    """保存一次受控命令经过校验后的执行策略。"""
-
-    argv: tuple[str, ...]
-    effect: ToolEffect
-    requires_confirmation: bool
 
 
 class RunCommandTool(Tool):
@@ -130,14 +72,15 @@ class RunCommandTool(Tool):
         self._guard = guard
         self.timeout_seconds = timeout_seconds
         self._max_output_bytes = max_output_bytes
+        self._policy_resolver = CommandPolicyResolver()
 
     def requires_confirmation_for(self, arguments: JsonObject) -> bool:
         # ToolExecutor 会在执行前调用本方法。
         # 直接调用 execute() 不会弹出确认框。
-        return self._prepare_policy(arguments).requires_confirmation
+        return self._policy_resolver.resolve(arguments).requires_confirmation
 
     def effect_for(self, arguments: JsonObject) -> ToolEffect:
-        return self._prepare_policy(arguments).effect
+        return self._policy_resolver.resolve(arguments).effect
 
     def execute(self, arguments: JsonObject) -> str:
         return self.execute_with_context(arguments, ToolExecutionContext())
@@ -148,7 +91,7 @@ class RunCommandTool(Tool):
         context: ToolExecutionContext,
     ) -> str:
         # 执行阶段再次生成策略，避免调用方绕过 ToolExecutor 后跳过白名单校验。
-        policy = self._prepare_policy(arguments)
+        policy = self._policy_resolver.resolve(arguments)
         # WorkspaceGuard 会把 cwd 解析为真实路径。
         # 绝对路径、父目录跳转和越界符号链接都会在创建子进程前被拒绝。
         cwd = self._resolve_cwd(arguments)
@@ -215,109 +158,6 @@ class RunCommandTool(Tool):
             ensure_ascii=False,
         )
 
-    def _prepare_policy(self, arguments: JsonObject) -> CommandPolicy:
-        """完成通用校验并把命令分派到对应的命令族策略。"""
-        unexpected_keys = set(arguments) - {"command", "cwd"}
-        if unexpected_keys:
-            raise ToolExecutionError(
-                "run_command 包含不支持的参数："
-                + "、".join(sorted(str(key) for key in unexpected_keys))
-            )
-        raw_command = arguments.get("command")
-        if not isinstance(raw_command, list) or not raw_command:
-            raise ToolExecutionError(
-                f"command 必须是包含 1 到 {MAX_COMMAND_ARGUMENTS} 个非空字符串的数组。"
-            )
-        if len(raw_command) > MAX_COMMAND_ARGUMENTS:
-            raise ToolExecutionError(
-                f"command 最多包含 {MAX_COMMAND_ARGUMENTS} 个字符串。"
-            )
-        if not all(isinstance(item, str) and item for item in raw_command):
-            raise ToolExecutionError("command 中的每一项都必须是非空字符串。")
-        if any(
-            len(item) > MAX_ARGUMENT_LENGTH or "\x00" in item
-            for item in raw_command
-        ):
-            raise ToolExecutionError("命令参数过长或包含空字符。")
-        if any(item in SHELL_OPERATORS for item in raw_command):
-            raise ToolExecutionError("不支持 Shell 管道、重定向或命令拼接。")
-        # 这里执行命令行层的第一道路径检查。
-        # 实际 cwd、脚本和仓库根目录稍后还会通过 WorkspaceGuard 校验真实路径。
-        self._reject_outside_path_tokens(raw_command[1:])
-
-        executable = Path(raw_command[0]).name.lower()
-        if executable.endswith(".exe"):
-            executable = executable[:-4]
-        if executable in SHELL_EXECUTABLES:
-            raise ToolExecutionError(f"禁止启动 Shell：{raw_command[0]}")
-        if executable == "git":
-            return self._git_policy(raw_command)
-        if executable in {"python", "python3"}:
-            return self._python_policy(raw_command)
-        raise ToolExecutionError(
-            "当前只允许受控的 git、python 和 python3 命令。"
-        )
-
-    def _git_policy(self, command: list[str]) -> CommandPolicy:
-        if "/" in command[0] or "\\" in command[0]:
-            raise ToolExecutionError(
-                "git 必须通过系统 PATH 启动，不能指定自定义程序路径。"
-            )
-        # 只允许 PATH 中解析到的 Git，避免运行工作区里伪装成 git.exe 的程序。
-        git_executable = shutil.which("git")
-        if git_executable is None:
-            raise ToolExecutionError("系统 PATH 中未找到 git。")
-        normalized = [git_executable, *command[1:]]
-        if len(command) < 2 or command[1].startswith("-"):
-            raise ToolExecutionError("git 命令必须直接指定受支持的子命令。")
-        # 子命令看似只读也可能被选项改变语义，因此必须先过滤危险选项。
-        if any(
-            argument == option or argument.startswith(f"{option}=")
-            for argument in command[1:]
-            for option in FORBIDDEN_GIT_OPTIONS
-        ):
-            raise ToolExecutionError("git 命令包含可能绕过工作区或写入文件的选项。")
-        subcommand = command[1].lower()
-        if subcommand in FORBIDDEN_GIT_COMMANDS:
-            raise ToolExecutionError(f"当前版本禁止执行破坏性 git {subcommand}。")
-        if subcommand in READ_ONLY_GIT_COMMANDS:
-            return CommandPolicy(tuple(normalized), ToolEffect.READ_ONLY, False)
-        if subcommand in CONFIRMED_GIT_COMMANDS:
-            return CommandPolicy(
-                tuple(normalized),
-                ToolEffect.EXTERNAL_SIDE_EFFECT,
-                True,
-            )
-        raise ToolExecutionError(f"不支持 git 子命令：{subcommand}")
-
-    def _python_policy(self, command: list[str]) -> CommandPolicy:
-        # 命令始终使用 Agent 当前虚拟环境中的解释器。
-        # 这样可以避免模型调用系统旧版 Python，或通过自定义 python.exe 路径替换实际程序。
-        normalized = [sys.executable, *command[1:]]
-        if len(command) == 2 and command[1] in {"--version", "-V"}:
-            return CommandPolicy(tuple(normalized), ToolEffect.READ_ONLY, False)
-        if len(command) >= 3 and command[1] == "-m":
-            module = command[2]
-            if module in {"unittest", "pytest", "pip", "compileall"}:
-                return CommandPolicy(
-                    tuple(normalized),
-                    ToolEffect.EXTERNAL_SIDE_EFFECT,
-                    True,
-                )
-            raise ToolExecutionError(f"不支持执行 Python 模块：{module}")
-        if len(command) >= 2 and command[1].lower().endswith(".py"):
-            script = Path(command[1])
-            if script.is_absolute() or ".." in script.parts:
-                raise ToolExecutionError("Python 脚本必须使用工作区内的相对路径。")
-            return CommandPolicy(
-                tuple(normalized),
-                ToolEffect.EXTERNAL_SIDE_EFFECT,
-                True,
-            )
-        if any(item in {"-c", "-"} for item in command[1:]):
-            raise ToolExecutionError("禁止执行内联 Python 代码或标准输入脚本。")
-        raise ToolExecutionError("不支持该 Python 命令形式。")
-
     def _resolve_cwd(self, arguments: JsonObject) -> Path:
         cwd = arguments.get("cwd", ".")
         if not isinstance(cwd, str):
@@ -326,25 +166,6 @@ class RunCommandTool(Tool):
             return self._guard.resolve_directory(cwd)
         except WorkspaceAccessError as error:
             raise ToolExecutionError(str(error)) from error
-
-    @staticmethod
-    def _reject_outside_path_tokens(arguments: list[str]) -> None:
-        """拒绝参数中显式的绝对路径和父目录跳转。
-
-        这里只检查命令行中可识别的路径形态，并不能构成操作系统沙箱。
-        确认后运行的 Python 代码仍可能自行访问工作区外文件。
-        """
-        for argument in arguments:
-            candidate = argument.split("=", 1)[1] if "=" in argument else argument
-            candidate_paths = (
-                PurePosixPath(candidate),
-                PureWindowsPath(candidate),
-            )
-            escapes_workspace = any(
-                path.is_absolute() or ".." in path.parts for path in candidate_paths
-            )
-            if escapes_workspace:
-                raise ToolExecutionError("命令参数不得引用工作区外的路径。")
 
     def _validate_git_repository(self, policy: CommandPolicy, cwd: Path) -> None:
         if Path(policy.argv[0]).name.lower().removesuffix(".exe") != "git":

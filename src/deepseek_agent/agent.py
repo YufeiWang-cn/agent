@@ -2,6 +2,7 @@
 
 import logging
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 from uuid import uuid4
@@ -19,8 +20,8 @@ from .memory import (
     JsonProjectStore,
     JsonSessionStore,
     Project,
-    ProjectStoreError,
     Session,
+    SessionCoordinator,
     SessionStoreError,
 )
 from .models import ChatModel, DeepSeekModel, TextDelta, ToolCallRequest
@@ -70,6 +71,27 @@ AgentEventCallback = Callable[[AgentEvent], None]
 CancelCheck = Callable[[], bool]
 
 
+@dataclass(frozen=True, slots=True)
+class TurnCallbacks:
+    """集中保存一轮对话使用的流式回调和取消检查。"""
+
+    on_text: TextCallback | None
+    on_tool_call: ToolCallCallback | None
+    on_tool_result: ToolResultCallback | None
+    on_event: AgentEventCallback | None
+    should_cancel: CancelCheck | None
+
+
+@dataclass(slots=True)
+class TurnProgress:
+    """保存单轮执行的回滚检查点和循环进度。"""
+
+    checkpoint: int
+    plan_checkpoint: TaskPlan | None
+    steps_completed: int = 0
+    force_plan_continuation: bool = False
+
+
 class Agent:
     """对外提供完整 Agent 能力，并维护每轮执行的一致性边界。"""
 
@@ -115,18 +137,23 @@ class Agent:
             )
         )
         self._conversation = Conversation(settings.system_prompt)
-        self._session_store = session_store or JsonSessionStore(
+        effective_session_store = session_store or JsonSessionStore(
             Path(DEFAULT_SESSION_DIRECTORY)
         )
         journal_directory = (
             Path(DEFAULT_RUN_DIRECTORY)
             if session_store is None
-            else self._session_store.directory / ".runs"
+            else effective_session_store.directory / ".runs"
         )
         self._run_journal = run_journal or RunJournal(journal_directory)
         self._recovery_issues = self._load_recovery_issues()
-        self._project_store = project_store or JsonProjectStore(
+        effective_project_store = project_store or JsonProjectStore(
             Path(DEFAULT_PROJECT_FILE)
+        )
+        self._sessions = SessionCoordinator(
+            self._conversation,
+            effective_session_store,
+            effective_project_store,
         )
         self._context_manager = context_manager or ContextManager(
             settings.max_context_tokens
@@ -135,8 +162,7 @@ class Agent:
             confirmer if confirmer is not None else ConsoleToolConfirmer()
         )
         self._tool_executor = ToolExecutor(self._tools, self._confirmer)
-        self._session = self._restore_latest_session()
-        self._plan_runtime.restore(self._session.plan)
+        self._plan_runtime.restore(self._sessions.current.plan)
         # 回滚结果状态用于记录最近一次中断所采用的处理方式。
         # 界面根据该状态决定删除临时轮次还是重新渲染工具历史。
         self._last_turn_history_preserved = False
@@ -160,240 +186,285 @@ class Agent:
         """执行一轮 Agent 对话，并通过回调发送流式事件。
 
         本方法只回滚 Conversation 中属于当前轮次的消息。
-        已经完成的工具可能产生文件等外部副作用。
-        这类外部副作用不会被自动撤销。
-        系统会保留相应的工具记录，使会话历史与真实外部状态保持一致。
+        已经完成的工具可能产生无法自动撤销的外部副作用。
+        系统会优先保留相应工具记录，使会话历史与真实状态保持一致。
         """
-        # 回滚检查点保存本轮开始前的消息数量。
-        # 回滚只删除本轮新增消息，不影响旧会话历史。
-        checkpoint = len(self._conversation)
+        progress = self._start_turn(prompt)
+        callbacks = TurnCallbacks(
+            on_text,
+            on_tool_call,
+            on_tool_result,
+            on_event,
+            should_cancel,
+        )
+        try:
+            return self._run_turn_loop(progress, callbacks)
+        except AgentCancelledError as error:
+            self._handle_cancelled_turn(error, progress)
+            raise
+        except Exception as error:
+            self._handle_failed_turn(error, progress)
+            raise
+
+    def _start_turn(self, prompt: str) -> TurnProgress:
+        """建立回滚检查点，并初始化本轮运行状态。"""
+        progress = TurnProgress(
+            checkpoint=len(self._conversation),
+            plan_checkpoint=self._current_plan,
+        )
         self._begin_turn()
-        plan_checkpoint = self._current_plan
         turn_id = uuid4().hex
         self._turn_state.begin(turn_id)
         self._record_turn_started_safely(turn_id)
-        # 每轮开始先清空上轮的结果，避免界面误用旧的“已保留”状态。
         self._last_turn_history_preserved = False
         self._last_turn_outcome = None
         self._conversation.add_user(prompt)
-        steps_completed = 0
-        force_plan_continuation = False
+        return progress
 
+    def _run_turn_loop(
+        self,
+        progress: TurnProgress,
+        callbacks: TurnCallbacks,
+    ) -> TurnOutcome:
+        """持续执行模型和工具，直到得到明确的轮次终止状态。"""
+        self._emit_event(callbacks.on_event, AgentEvent.turn_started())
+        for _step in range(self._max_agent_steps):
+            answer_parts, tool_requests = self._stream_model_step(
+                progress,
+                callbacks,
+            )
+            progress.steps_completed += 1
+
+            if tool_requests and self._single_step_boundary_reached():
+                return self._finish_single_step_boundary(
+                    answer_parts,
+                    progress,
+                    callbacks,
+                )
+
+            if not tool_requests:
+                outcome = self._handle_text_response(
+                    answer_parts,
+                    progress,
+                    callbacks,
+                )
+                if outcome is not None:
+                    return outcome
+                continue
+
+            self._conversation.add_assistant_tool_calls(
+                [request.as_message_dict() for request in tool_requests],
+                content="".join(answer_parts) or None,
+            )
+            self._execute_tools(
+                tool_requests,
+                on_tool_call=callbacks.on_tool_call,
+                on_tool_result=callbacks.on_tool_result,
+                on_event=callbacks.on_event,
+                should_cancel=callbacks.should_cancel,
+            )
+            progress.force_plan_continuation = False
+
+        return self._finish_step_limit(progress, callbacks)
+
+    def _stream_model_step(
+        self,
+        progress: TurnProgress,
+        callbacks: TurnCallbacks,
+    ) -> tuple[list[str], list[ToolCallRequest]]:
+        """收集一次模型响应，并立即转发文本增量事件。"""
+        self._raise_if_cancelled(callbacks.should_cancel)
+        answer_parts: list[str] = []
+        tool_requests: list[ToolCallRequest] = []
+        model_messages = self._prepare_model_messages(
+            force_plan_continuation=progress.force_plan_continuation,
+        )
+        for event in self._model.stream(model_messages, self._tools.schemas):
+            self._raise_if_cancelled(callbacks.should_cancel)
+            if isinstance(event, TextDelta):
+                self._emit_text(event.content, callbacks)
+                answer_parts.append(event.content)
+            elif isinstance(event, ToolCallRequest):
+                tool_requests.append(event)
+        return answer_parts, tool_requests
+
+    def _handle_text_response(
+        self,
+        answer_parts: list[str],
+        progress: TurnProgress,
+        callbacks: TurnCallbacks,
+    ) -> TurnOutcome | None:
+        """处理没有工具请求的模型响应，并判断计划是否需要继续。"""
+        answer = "".join(answer_parts)
+        if not answer:
+            answer = "（模型未返回内容）"
+            self._emit_text(answer, callbacks)
+        self._conversation.add_assistant(answer)
+
+        if self._has_active_execution_plan():
+            if self._current_plan.waiting_for_user:
+                return self._complete_turn(
+                    RunStatus.WAITING_USER,
+                    answer,
+                    progress,
+                )
+            if self._single_step_boundary_reached():
+                return self._complete_turn(
+                    RunStatus.COMPLETED,
+                    answer,
+                    progress,
+                )
+            # 执行计划未结束时，下一次请求会收到仅存在于运行时的继续提示。
+            progress.force_plan_continuation = True
+            return None
+        return self._complete_turn(RunStatus.COMPLETED, answer, progress)
+
+    def _finish_single_step_boundary(
+        self,
+        answer_parts: list[str],
+        progress: TurnProgress,
+        callbacks: TurnCallbacks,
+    ) -> TurnOutcome:
+        """在单步目标结束后丢弃额外工具请求，并闭合当前轮次。"""
+        waiting_for_user = self._current_plan.waiting_for_user
+        answer = "".join(answer_parts) or (
+            "当前步骤正在等待用户输入。"
+            if waiting_for_user
+            else "当前目标步骤已经结束。"
+        )
+        if not answer_parts:
+            self._emit_text(answer, callbacks)
+        self._conversation.add_assistant(answer)
+        status = (
+            RunStatus.WAITING_USER
+            if waiting_for_user
+            else RunStatus.COMPLETED
+        )
+        return self._complete_turn(status, answer, progress)
+
+    def _finish_step_limit(
+        self,
+        progress: TurnProgress,
+        callbacks: TurnCallbacks,
+    ) -> TurnOutcome:
+        """记录最大执行步数，并以未完成状态结束当前轮次。"""
+        message = f"Agent 已达到最大执行步数 {self._max_agent_steps}，任务已停止。"
+        self._conversation.add_assistant(message)
+        self._save_completed_turn(progress.checkpoint)
+        self._emit_text(message, callbacks)
+        return self._finish_turn_outcome(
+            status=RunStatus.STEP_LIMIT_REACHED,
+            final_text=message,
+            steps_completed=progress.steps_completed,
+            checkpoint=progress.checkpoint,
+            history_preserved=True,
+        )
+
+    def _complete_turn(
+        self,
+        status: RunStatus,
+        final_text: str,
+        progress: TurnProgress,
+    ) -> TurnOutcome:
+        self._save_completed_turn(progress.checkpoint)
+        return self._finish_turn_outcome(
+            status=status,
+            final_text=final_text,
+            steps_completed=progress.steps_completed,
+            checkpoint=progress.checkpoint,
+            history_preserved=True,
+        )
+
+    def _handle_cancelled_turn(
+        self,
+        error: AgentCancelledError,
+        progress: TurnProgress,
+    ) -> None:
+        outcome, records_preserved = self._resolve_interrupted_turn(
+            status=RunStatus.CANCELLED,
+            progress=progress,
+            pending_result="用户停止了本轮任务，本工具未执行。",
+            final_message="本轮已停止。停止前已完成的工具操作及其记录已保留。",
+            error_message=str(error),
+        )
+        error.tool_records_preserved = records_preserved
+        error.outcome = outcome
+        if records_preserved:
+            self._persist_interrupted_records(outcome, progress)
+
+    def _handle_failed_turn(
+        self,
+        error: Exception,
+        progress: TurnProgress,
+    ) -> None:
+        outcome, records_preserved = self._resolve_interrupted_turn(
+            status=RunStatus.FAILED,
+            progress=progress,
+            pending_result="本轮因调用失败而中断，本工具未执行。",
+            final_message=f"本轮因调用失败而中断：{error}",
+            error_message=str(error),
+        )
+        if records_preserved:
+            self._persist_interrupted_records(outcome, progress)
+
+    def _resolve_interrupted_turn(
+        self,
+        *,
+        status: RunStatus,
+        progress: TurnProgress,
+        pending_result: str,
+        final_message: str,
+        error_message: str,
+    ) -> tuple[TurnOutcome, bool]:
+        """根据已完成工具决定保留记录还是回滚临时消息。"""
+        completed_tool_calls = self._count_tool_results(progress.checkpoint)
+        records_preserved = self._preserve_completed_tool_records(
+            progress.checkpoint,
+            pending_result=pending_result,
+            final_message=final_message,
+        )
+        self._last_turn_history_preserved = records_preserved
+        if not records_preserved:
+            # 没有工具完成时，本轮不存在已知外部副作用，可以安全截断历史。
+            self._conversation.truncate(progress.checkpoint)
+            self._current_plan = progress.plan_checkpoint
+        outcome = self._finish_turn_outcome(
+            status=status,
+            final_text=self._latest_assistant_text(progress.checkpoint),
+            steps_completed=progress.steps_completed,
+            checkpoint=progress.checkpoint,
+            history_preserved=records_preserved,
+            error_message=error_message,
+            tool_calls_completed=completed_tool_calls,
+        )
+        return outcome, records_preserved
+
+    def _persist_interrupted_records(
+        self,
+        outcome: TurnOutcome,
+        progress: TurnProgress,
+    ) -> None:
+        """严格保存可能对应外部副作用的工具记录。"""
         try:
-            self._emit_event(on_event, AgentEvent.turn_started())
-            for _step in range(self._max_agent_steps):
-                self._raise_if_cancelled(should_cancel)
-                answer_parts: list[str] = []
-                tool_requests: list[ToolCallRequest] = []
-
-                model_messages = self._prepare_model_messages(
-                    force_plan_continuation=force_plan_continuation,
-                )
-                for event in self._model.stream(
-                    model_messages,
-                    self._tools.schemas,
-                ):
-                    self._raise_if_cancelled(should_cancel)
-                    if isinstance(event, TextDelta):
-                        self._emit_event(
-                            on_event,
-                            AgentEvent.text_delta(event.content),
-                        )
-                        if on_text is not None:
-                            on_text(event.content)
-                        answer_parts.append(event.content)
-                    elif isinstance(event, ToolCallRequest):
-                        tool_requests.append(event)
-                steps_completed += 1
-
-                if tool_requests and self._single_step_boundary_reached():
-                    # 单步目标已在上一批工具中结束或暂停，不再执行额外工具。
-                    waiting_for_user = self._current_plan.waiting_for_user
-                    answer = "".join(answer_parts) or (
-                        "当前步骤正在等待用户输入。"
-                        if waiting_for_user
-                        else "当前目标步骤已经结束。"
-                    )
-                    if not answer_parts:
-                        self._emit_event(
-                            on_event,
-                            AgentEvent.text_delta(answer),
-                        )
-                        if on_text is not None:
-                            on_text(answer)
-                    self._conversation.add_assistant(answer)
-                    self._save_completed_turn(checkpoint)
-                    return self._finish_turn_outcome(
-                        status=(
-                            RunStatus.WAITING_USER
-                            if waiting_for_user
-                            else RunStatus.COMPLETED
-                        ),
-                        final_text=answer,
-                        steps_completed=steps_completed,
-                        checkpoint=checkpoint,
-                        history_preserved=True,
-                    )
-
-                if not tool_requests:
-                    answer = "".join(answer_parts)
-                    if not answer:
-                        answer = "（模型未返回内容）"
-                        self._emit_event(
-                            on_event,
-                            AgentEvent.text_delta(answer),
-                        )
-                        if on_text is not None:
-                            on_text(answer)
-                    self._conversation.add_assistant(answer)
-                    if self._has_active_execution_plan():
-                        if self._current_plan.waiting_for_user:
-                            self._save_completed_turn(checkpoint)
-                            return self._finish_turn_outcome(
-                                status=RunStatus.WAITING_USER,
-                                final_text=answer,
-                                steps_completed=steps_completed,
-                                checkpoint=checkpoint,
-                                history_preserved=True,
-                            )
-                        if self._single_step_boundary_reached():
-                            self._save_completed_turn(checkpoint)
-                            return self._finish_turn_outcome(
-                                status=RunStatus.COMPLETED,
-                                final_text=answer,
-                                steps_completed=steps_completed,
-                                checkpoint=checkpoint,
-                                history_preserved=True,
-                            )
-                        # 执行计划未结束时，纯文本不能作为任务终点。
-                        # 下一次模型调用会收到只存在于本轮请求中的继续执行提示。
-                        force_plan_continuation = True
-                        continue
-
-                    self._save_completed_turn(checkpoint)
-                    return self._finish_turn_outcome(
-                        status=RunStatus.COMPLETED,
-                        final_text=answer,
-                        steps_completed=steps_completed,
-                        checkpoint=checkpoint,
-                        history_preserved=True,
-                    )
-
-                self._conversation.add_assistant_tool_calls(
-                    [request.as_message_dict() for request in tool_requests],
-                    content="".join(answer_parts) or None,
-                )
-                self._execute_tools(
-                    tool_requests,
-                    on_tool_call=on_tool_call,
-                    on_tool_result=on_tool_result,
-                    on_event=on_event,
-                    should_cancel=should_cancel,
-                )
-                force_plan_continuation = False
-
-            message = (
-                f"Agent 已达到最大执行步数 {self._max_agent_steps}，任务已停止。"
-            )
-            self._conversation.add_assistant(message)
-            self._save_completed_turn(checkpoint)
-            self._emit_event(on_event, AgentEvent.text_delta(message))
-            if on_text is not None:
-                on_text(message)
-            return self._finish_turn_outcome(
-                status=RunStatus.STEP_LIMIT_REACHED,
-                final_text=message,
-                steps_completed=steps_completed,
-                checkpoint=checkpoint,
-                history_preserved=True,
-            )
-        except AgentCancelledError as error:
-            # 回滚策略一：如果已有工具结果，外部状态可能已经改变，不能只删除对话记录。
-            # 此时保留完整工具链，并补齐尚未执行的工具结果。
-            completed_tool_calls = self._count_tool_results(checkpoint)
-            records_preserved = self._preserve_completed_tool_records(
-                checkpoint,
-                pending_result="用户停止了本轮任务，本工具未执行。",
-                final_message=(
-                    "本轮已停止。停止前已完成的工具操作及其记录已保留。"
-                ),
-            )
-            if records_preserved:
-                error.tool_records_preserved = True
-                self._last_turn_history_preserved = True
-            else:
-                # 回滚策略二适用于没有任何工具完成的情况。
-                # 此时本轮没有已知外部副作用，因此可以安全地截断到检查点。
-                self._conversation.truncate(checkpoint)
-                self._current_plan = plan_checkpoint
-            outcome = self._finish_turn_outcome(
-                status=RunStatus.CANCELLED,
-                final_text=self._latest_assistant_text(checkpoint),
-                steps_completed=steps_completed,
-                checkpoint=checkpoint,
-                history_preserved=error.tool_records_preserved,
-                error_message=str(error),
-                tool_calls_completed=completed_tool_calls,
-            )
-            error.outcome = outcome
-            if records_preserved:
-                try:
-                    # 已完成工具的记录必须成功落盘，否则本轮最终状态应改为失败。
-                    self._save_session()
-                    self._turn_state.side_effects_saved = True
-                    self._record_turn_finished_safely(outcome)
-                except Exception as save_error:
-                    self._finish_turn_outcome(
-                        status=RunStatus.FAILED,
-                        final_text=self._latest_assistant_text(checkpoint),
-                        steps_completed=steps_completed,
-                        checkpoint=checkpoint,
-                        history_preserved=True,
-                        error_message=str(save_error),
-                    )
-                    raise
-            raise
-        except Exception as error:
-            # 模型异常与用户停止使用同一套回滚判断。
-            # 有工具已经完成时保留真实记录，否则回滚本轮临时消息。
-            completed_tool_calls = self._count_tool_results(checkpoint)
-            records_preserved = self._preserve_completed_tool_records(
-                checkpoint,
-                pending_result="本轮因调用失败而中断，本工具未执行。",
-                final_message=f"本轮因调用失败而中断：{error}",
-            )
-            if records_preserved:
-                self._last_turn_history_preserved = True
-            else:
-                # 这里只回滚 Conversation，不会撤销文件系统或其他外部操作。
-                self._conversation.truncate(checkpoint)
-                self._current_plan = plan_checkpoint
-            outcome = self._finish_turn_outcome(
+            self._save_session()
+            self._turn_state.side_effects_saved = True
+            self._record_turn_finished_safely(outcome)
+        except Exception as save_error:
+            self._finish_turn_outcome(
                 status=RunStatus.FAILED,
-                final_text=self._latest_assistant_text(checkpoint),
-                steps_completed=steps_completed,
-                checkpoint=checkpoint,
-                history_preserved=self._last_turn_history_preserved,
-                error_message=str(error),
-                tool_calls_completed=completed_tool_calls,
+                final_text=self._latest_assistant_text(progress.checkpoint),
+                steps_completed=progress.steps_completed,
+                checkpoint=progress.checkpoint,
+                history_preserved=True,
+                error_message=str(save_error),
             )
-            if records_preserved:
-                try:
-                    # 已完成工具的记录必须成功落盘，否则保留失败状态并继续抛出保存异常。
-                    self._save_session()
-                    self._turn_state.side_effects_saved = True
-                    self._record_turn_finished_safely(outcome)
-                except Exception as save_error:
-                    self._finish_turn_outcome(
-                        status=RunStatus.FAILED,
-                        final_text=self._latest_assistant_text(checkpoint),
-                        steps_completed=steps_completed,
-                        checkpoint=checkpoint,
-                        history_preserved=True,
-                        error_message=str(save_error),
-                    )
-                    raise
             raise
+
+    def _emit_text(self, content: str, callbacks: TurnCallbacks) -> None:
+        """同时发送统一事件和兼容的纯文本回调。"""
+        self._emit_event(callbacks.on_event, AgentEvent.text_delta(content))
+        if callbacks.on_text is not None:
+            callbacks.on_text(content)
 
     def _execute_tools(
         self,
@@ -573,7 +644,7 @@ class Agent:
     def _record_turn_started_safely(self, turn_id: str) -> None:
         """尽力记录轮次开始事件，且不因审计失败阻止纯文本对话。"""
         try:
-            self._run_journal.record_turn_started(turn_id, self._session.id)
+            self._run_journal.record_turn_started(turn_id, self._sessions.current.id)
         except RunJournalError as error:
             self._logger.warning("无法记录轮次开始事件：%s", error)
 
@@ -833,104 +904,42 @@ class Agent:
 
     @property
     def session_id(self) -> str:
-        return self._session.id
+        return self._sessions.current.id
 
     @property
     def session_title(self) -> str:
-        return self._session.title
+        return self._sessions.current.title
 
     def history(self) -> list[Message]:
         return self._conversation.visible_history()
 
     def list_sessions(self) -> list[Session]:
-        return self._session_store.list_sessions()
+        return self._sessions.list_sessions()
 
     def list_projects(self) -> list[Project]:
-        return self._project_store.list_projects()
+        return self._sessions.list_projects()
 
     def create_project(self, name: str) -> Project:
-        return self._project_store.create(name)
+        return self._sessions.create_project(name)
 
     def rename_project(self, project_id: str, name: str) -> Project:
-        return self._project_store.rename(project_id, name)
+        return self._sessions.rename_project(project_id, name)
 
     def delete_project(self, project_id: str) -> Project:
-        """删除项目；失败时补偿恢复所有受影响会话的原项目归属。"""
-        project = self._project_store.get(project_id)
-        self._save_session()
-        # 移动会话前，补偿快照会保留磁盘中的完整 ``Session`` 对象。
-        # 后续步骤失败时，可以使用快照恢复原来的项目归属和其他会话字段。
-        affected = [
-            session
-            for session in self._session_store.list_sessions()
-            if session.project_id == project.id
-        ]
-        try:
-            # 事务执行阶段会先把项目内的会话全部移动到“未分类”。
-            # 所有会话移动成功后才会删除项目。
-            # 整个阶段成功后才会更新当前 Agent 的 Session 对象。
-            moved_sessions: dict[str, Session] = {}
-            for session in affected:
-                moved_sessions[session.id] = self._session_store.move_to_project(
-                    session.id,
-                    None,
-                )
-            deleted = self._project_store.delete(project.id)
-        except Exception as error:
-            # 补偿回滚会逐个写回操作前保存的会话快照。
-            # JSON 文件存储不支持原生事务，因此这里使用反向操作恢复原状态。
-            rollback_errors: list[str] = []
-            for snapshot in affected:
-                try:
-                    self._session_store.save(snapshot)
-                except Exception as rollback_error:
-                    rollback_errors.append(str(rollback_error))
-            if rollback_errors:
-                # 补偿失败时必须显式报告部分回滚风险。
-                # 上层不能在补偿失败后误认为项目和所有会话都已经恢复成功。
-                raise ProjectStoreError(
-                    "删除项目失败，且会话归属回滚失败："
-                    + "；".join(rollback_errors)
-                ) from error
-            raise
-        # 只有磁盘上的会话移动和项目删除都成功后，才会提交当前内存状态。
-        # 延迟提交可防止界面提前显示尚未生效的状态。
-        if self._session.id in moved_sessions:
-            self._session = moved_sessions[self._session.id]
-        return deleted
+        return self._sessions.delete_project(project_id, self._current_plan)
 
     def start_new_session(self, project_id: str | None = None) -> Session:
-        """保存当前会话后创建新会话；任一步失败都不提前切换内存状态。"""
-        resolved_project_id = self._resolve_project_id(project_id)
-        self._save_session()
-        return self._start_new_session(resolved_project_id)
+        session = self._sessions.start_new_session(self._current_plan, project_id)
+        self._plan_runtime.restore(session.plan)
+        return session
 
     def clear_conversation(self) -> None:
-        """以“先持久化、后提交内存”的顺序清空当前会话。"""
-        cleared_messages = [
-            {"role": "system", "content": self._conversation.system_prompt}
-        ]
-        # 所有待提交的修改都先写入候选副本。
-        # 当前 Session 和 Conversation 在磁盘保存成功前保持不变。
-        candidate = self._copy_session(self._session)
-        candidate.update_messages(cleared_messages)
-        candidate.update_plan(None)
-        # 持久化阶段发生保存失败时会直接抛出异常。
-        # 保存失败后不会执行内存提交，因此不需要恢复当前 Conversation。
-        self._session_store.save(candidate)
-        # 提交阶段：只有候选状态成功落盘后，才同步更新两个内存状态对象。
-        self._conversation.restore(cleared_messages)
-        self._session = candidate
-        self._current_plan = None
+        session = self._sessions.clear_conversation()
+        self._plan_runtime.restore(session.plan)
 
     def load_session(self, session_id: str) -> Session:
-        """先保存当前会话，再加载并提交目标会话。"""
-        self._save_session()
-        session = self._session_store.load(session_id)
-        # 恢复操作会先校验消息结构，校验成功后才替换 ``Conversation``。
-        self._conversation.restore(session.messages)
-        self._session = session
-        self._current_plan = session.plan
+        session = self._sessions.load_session(session_id, self._current_plan)
+        self._plan_runtime.restore(session.plan)
         return session
 
     def delete_session(
@@ -938,122 +947,38 @@ class Agent:
         session_id: str,
         replacement_project_id: str | None = None,
     ) -> str:
-        """删除会话；删除当前会话时先准备可用的替代会话。"""
-        target = self._session_store.load(session_id)
-        if target.id != self._session.id:
-            return self._session_store.delete(target.id)
-
-        resolved_project_id = self._resolve_project_id(replacement_project_id)
-        # 预提交阶段会先创建并保存一个替代会话。
-        # 替代会话可以确保旧会话删除后 Agent 仍然拥有有效会话。
-        # 预提交阶段不会切换当前内存状态。
-        replacement = self._create_new_session(resolved_project_id)
-        try:
-            deleted_id = self._session_store.delete(target.id)
-        except Exception:
-            # 旧会话删除失败时，补偿回滚会删除刚创建的替代会话。
-            # 删除替代会话可以使磁盘状态尽量恢复到操作前。
-            # 即使补偿删除失败，当前内存仍然指向原会话。
-            try:
-                self._session_store.delete(replacement.id)
-            except Exception:
-                pass
-            raise
-        # 提交内存状态：旧会话确认删除后，才正式切换到替代会话。
-        self._conversation.restore(replacement.messages)
-        self._session = replacement
-        self._current_plan = replacement.plan
+        current_session_id = self._sessions.current.id
+        deleted_id = self._sessions.delete_session(
+            session_id,
+            replacement_project_id,
+        )
+        if deleted_id == current_session_id:
+            self._plan_runtime.restore(self._sessions.current.plan)
         return deleted_id
 
     def rename_session(self, session_id: str, title: str) -> Session:
-        self._save_session()
-        session = self._session_store.rename(session_id, title)
-        if session.id == self._session.id:
-            self._session = session
-        return session
+        return self._sessions.rename_session(
+            session_id,
+            title,
+            self._current_plan,
+        )
 
     def move_session(
         self,
         session_id: str,
         project_id: str | None,
     ) -> Session:
-        self._save_session()
-        resolved_project_id = self._resolve_project_id(project_id)
-        session = self._session_store.move_to_project(
+        return self._sessions.move_session(
             session_id,
-            resolved_project_id,
+            project_id,
+            self._current_plan,
         )
-        if session.id == self._session.id:
-            self._session = session
-        return session
 
     def save_session(self) -> None:
         self._save_session()
 
-    def _restore_latest_session(self) -> Session:
-        latest = self._session_store.latest()
-        if latest is not None:
-            try:
-                self._conversation.restore(latest.messages)
-                return latest
-            except ValueError:
-                pass
-        return self._start_new_session()
-
-    def _start_new_session(self, project_id: str | None = None) -> Session:
-        """创建持久化会话成功后，将其提交为当前内存会话。"""
-        session = self._create_new_session(project_id)
-        # ``_create_new_session`` 返回前已经完成磁盘保存。
-        # 因此后续内存切换不会造成界面进入一个尚未持久化的新会话。
-        self._conversation.restore(session.messages)
-        self._session = session
-        self._current_plan = session.plan
-        return session
-
-    def _create_new_session(self, project_id: str | None = None) -> Session:
-        """创建并保存新会话，但不修改当前 Agent 的内存状态。"""
-        messages = [
-            {"role": "system", "content": self._conversation.system_prompt}
-        ]
-        session = Session.create(messages, project_id=project_id)
-        # 保存失败时直接抛出异常，调用方仍保持原 Session 和 Conversation。
-        self._session_store.save(session)
-        return session
-
-    def _resolve_project_id(self, project_id: str | None) -> str | None:
-        if project_id is None:
-            return None
-        return self._project_store.get(project_id).id
-
-    @staticmethod
-    def _copy_session(session: Session) -> Session:
-        """生成深拷贝候选对象，避免持久化前修改当前 Session。"""
-        return Session.from_dict(session.to_dict())
-
     def _save_session(self) -> None:
-        """事务式保存当前会话：先保存候选副本，成功后再替换内存对象。"""
-        # 候选状态与当前 Session 相互独立。
-        # 候选对象的标题、时间和消息更新不会提前影响当前内存对象。
-        candidate = self._copy_session(self._session)
-        if candidate.title == "新会话":
-            first_user_message = next(
-                (
-                    message.get("content", "")
-                    for message in self._conversation.visible_history()
-                    if message.get("role") == "user"
-                ),
-                "",
-            )
-            if first_user_message:
-                compact_title = " ".join(str(first_user_message).split())
-                candidate.title = compact_title[:30]
-        candidate.update_messages(self._conversation.messages)
-        candidate.update_plan(self._current_plan)
-        # 持久化操作是候选状态的提交边界。
-        # 保存操作抛出异常时不会替换内存对象，当前 ``Session`` 会保持原状。
-        # 保存成功后才会把候选对象设置为新的当前 Session。
-        self._session_store.save(candidate)
-        self._session = candidate
+        self._sessions.save_current(self._current_plan)
 
     def _save_session_best_effort(self) -> bool:
         """尽力保存纯文本会话，并通过日志报告非关键保存失败。"""

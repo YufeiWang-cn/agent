@@ -81,6 +81,14 @@ class ProjectSessionSidebar(ttk.Frame):
         self._build()
 
     def _build(self) -> None:
+        """按视觉区域构建侧栏，保持控件创建顺序清晰可查。"""
+        self._build_brand()
+        self._build_project_tree()
+        self._build_session_filter()
+        self._build_session_tree()
+        self._build_context_menus()
+
+    def _build_brand(self) -> None:
         brand = ttk.Frame(self, style="Sidebar.TFrame", padding=(16, 16, 16, 8))
         brand.pack(fill="x")
         ttk.Label(
@@ -93,7 +101,6 @@ class ProjectSessionSidebar(ttk.Frame):
             text="Agent 工作区",
             style="SidebarMuted.TLabel",
         ).pack(anchor="w", pady=(3, 0))
-
         self._new_session_button = ttk.Button(
             self,
             text="＋  新建会话",
@@ -102,6 +109,7 @@ class ProjectSessionSidebar(ttk.Frame):
         )
         self._new_session_button.pack(fill="x", padx=12, pady=(4, 12))
 
+    def _build_project_tree(self) -> None:
         project_header = ttk.Frame(self, style="Sidebar.TFrame", padding=(16, 4))
         project_header.pack(fill="x")
         ttk.Label(
@@ -140,13 +148,13 @@ class ProjectSessionSidebar(ttk.Frame):
         self._project_tree.bind("<<TreeviewSelect>>", self._on_project_selected)
         self._project_tree.bind("<Button-3>", self._show_project_menu)
 
+    def _build_session_filter(self) -> None:
         ttk.Separator(self).pack(fill="x", padx=14, pady=(0, 9))
         ttk.Label(
             self,
             text="会话  ·  右键管理",
             style="SidebarMuted.TLabel",
         ).pack(anchor="w", padx=16, pady=(0, 6))
-
         session_filter = tk.Frame(self, background=SIDEBAR_BACKGROUND)
         session_filter.pack(fill="x", padx=(14, 9), pady=(0, 8))
         self._filter_var = tk.StringVar()
@@ -172,7 +180,6 @@ class ProjectSessionSidebar(ttk.Frame):
             fill="x",
             expand=True,
             ipady=6,
-            padx=(0, 0),
         )
         self._filter_entry.bind("<KeyRelease>", self._schedule_filter)
         tk.Button(
@@ -190,6 +197,7 @@ class ProjectSessionSidebar(ttk.Frame):
             pady=3,
         ).pack(side="right")
 
+    def _build_session_tree(self) -> None:
         session_frame = ttk.Frame(self, style="Sidebar.TFrame")
         session_frame.pack(fill="both", expand=True, padx=(16, 8))
         self._session_tree = ttk.Treeview(
@@ -213,7 +221,6 @@ class ProjectSessionSidebar(ttk.Frame):
         self._session_tree.bind("<Double-Button-1>", self._load_selected_session)
         self._session_tree.bind("<Return>", self._load_selected_session)
         self._session_tree.bind("<Button-3>", self._show_session_menu)
-        self._build_context_menus()
 
     def focus_filter(self, _event: tk.Event | None = None) -> str:
         self._filter_entry.focus_set()
