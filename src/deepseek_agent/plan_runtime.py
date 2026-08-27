@@ -88,6 +88,7 @@ class PlanRuntime:
                 raise ValueError("替换未结束的计划时必须提供 explanation。")
             committed = plan.with_identity(plan.id, 1)
         else:
+            assert previous is not None
             validate_plan_transition(previous, plan)
             committed = plan.with_identity(previous.id, previous.revision + 1)
 
@@ -198,7 +199,11 @@ class PlanRuntime:
     ) -> str | None:
         """按照活动步骤、新结束步骤和待处理步骤的顺序选择本轮目标。"""
         same_plan = previous is not None and previous.id == current.id
-        target_steps = previous.steps if same_plan else current.steps
+        target_steps = (
+            previous.steps
+            if same_plan and previous is not None
+            else current.steps
+        )
         active_step = next(
             (
                 step

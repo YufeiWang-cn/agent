@@ -302,7 +302,9 @@ class Agent:
         self._conversation.add_assistant(answer)
 
         if self._has_active_execution_plan():
-            if self._current_plan.waiting_for_user:
+            current_plan = self._current_plan
+            assert current_plan is not None
+            if current_plan.waiting_for_user:
                 return self._complete_turn(
                     RunStatus.WAITING_USER,
                     answer,
@@ -326,7 +328,9 @@ class Agent:
         callbacks: TurnCallbacks,
     ) -> TurnOutcome:
         """在单步目标结束后丢弃额外工具请求，并闭合当前轮次。"""
-        waiting_for_user = self._current_plan.waiting_for_user
+        current_plan = self._current_plan
+        assert current_plan is not None
+        waiting_for_user = current_plan.waiting_for_user
         answer = "".join(answer_parts) or (
             "当前步骤正在等待用户输入。"
             if waiting_for_user
@@ -494,12 +498,7 @@ class Agent:
                 on_tool_call(request)
             record = self._tool_executor.execute(
                 request,
-                on_confirmation_state=lambda waiting, current=request: (
-                    self._handle_confirmation_state_for_request(
-                        current,
-                        waiting,
-                    )
-                ),
+                on_confirmation_state=self._confirmation_callback(request),
                 before_execution=self._record_tool_started,
                 # GUI 的停止信号会继续传递给长时间运行的命令，而不只在工具之间检查。
                 should_cancel=should_cancel,
@@ -529,6 +528,16 @@ class Agent:
             if on_tool_result is not None:
                 on_tool_result(request, record.model_result)
         return records
+
+    def _confirmation_callback(
+        self,
+        request: ToolCallRequest,
+    ) -> Callable[[bool], None]:
+        """为当前工具请求创建带静态类型的确认状态回调。"""
+        def handle(waiting: bool) -> None:
+            self._handle_confirmation_state_for_request(request, waiting)
+
+        return handle
 
     def _handle_confirmation_state(self, waiting: bool) -> None:
         """根据工具确认阶段更新 Agent 的实时运行状态。"""

@@ -9,7 +9,6 @@ from .theme import (
     EDITOR_BORDER,
     EDITOR_MUTED,
     EDITOR_TEXT,
-    EDITOR_TOOLBAR,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
 )

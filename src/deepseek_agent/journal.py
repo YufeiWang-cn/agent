@@ -321,14 +321,18 @@ def _tool_event_key(event: dict[str, Any]) -> tuple[str, str, str] | None:
     """返回用于关联工具开始与结束事件的稳定标识。"""
     if event.get("event") not in {"tool_started", "tool_finished"}:
         return None
-    values = (
-        event.get("run_id"),
-        event.get("turn_id"),
-        event.get("call_id"),
-    )
-    if not all(isinstance(value, str) and value for value in values):
+    run_id = event.get("run_id")
+    turn_id = event.get("turn_id")
+    call_id = event.get("call_id")
+    if not all(
+        isinstance(value, str) and value
+        for value in (run_id, turn_id, call_id)
+    ):
         return None
-    return values
+    assert isinstance(run_id, str)
+    assert isinstance(turn_id, str)
+    assert isinstance(call_id, str)
+    return run_id, turn_id, call_id
 
 
 __all__ = ["RecoveryIssue", "RunJournal", "RunJournalError"]

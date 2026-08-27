@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, cast
 
 from ..workspace import WorkspaceAccessError, WorkspaceGuard
 from .base import (
@@ -70,7 +70,7 @@ class RunCommandTool(Tool):
         if max_output_bytes <= 0:
             raise ValueError("max_output_bytes 必须大于 0")
         self._guard = guard
-        self.timeout_seconds = timeout_seconds
+        self.timeout_seconds: float = timeout_seconds
         self._max_output_bytes = max_output_bytes
         self._policy_resolver = CommandPolicyResolver()
 
@@ -121,9 +121,9 @@ class RunCommandTool(Tool):
             except (OSError, ValueError) as error:
                 raise ToolExecutionError(f"无法启动命令：{error}") from error
 
-            deadline = started_at + self.timeout_seconds
+            local_deadline = started_at + self.timeout_seconds
             while process.poll() is None:
-                if context.cancelled:
+                if context.cancellation_requested:
                     self._terminate_process(process)
                     # 写入类命令被中断时，系统无法断定它是否已经生效。
                     # 上层必须按照 RESULT_UNKNOWN 状态和副作用保留规则处理。
@@ -131,7 +131,7 @@ class RunCommandTool(Tool):
                         "命令执行已取消。",
                         side_effect_possible=policy.effect is not ToolEffect.READ_ONLY,
                     )
-                if time.monotonic() >= deadline:
+                if context.timed_out or time.monotonic() >= local_deadline:
                     self._terminate_process(process)
                     raise ToolExecutionError(
                         f"命令执行超过 {self.timeout_seconds:g} 秒，已终止。",
@@ -139,8 +139,12 @@ class RunCommandTool(Tool):
                     )
                 time.sleep(POLL_INTERVAL_SECONDS)
 
-            stdout, stdout_truncated = self._read_output(stdout_file)
-            stderr, stderr_truncated = self._read_output(stderr_file)
+            stdout, stdout_truncated = self._read_output(
+                cast(BinaryIO, stdout_file)
+            )
+            stderr, stderr_truncated = self._read_output(
+                cast(BinaryIO, stderr_file)
+            )
 
         # Popen 正常结束不代表业务命令执行成功。
         # 调用模型必须检查 exit_code。
@@ -264,7 +268,12 @@ class RunCommandTool(Tool):
                     creationflags=subprocess.CREATE_NO_WINDOW,
                 )
             else:
-                os.killpg(process.pid, signal.SIGKILL)
+                kill_process_group = getattr(os, "killpg", None)
+                kill_signal = getattr(signal, "SIGKILL", None)
+                if kill_process_group is None or kill_signal is None:
+                    process.kill()
+                else:
+                    kill_process_group(process.pid, kill_signal)
         except (OSError, subprocess.SubprocessError):
             process.kill()
         finally:

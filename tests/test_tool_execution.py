@@ -16,6 +16,7 @@ from deepseek_agent.tools import (
     JsonObject,
     Tool,
     ToolEffect,
+    ToolExecutionContext,
     ToolExecutionError,
     ToolRegistry,
 )
@@ -53,6 +54,24 @@ class ProtocolTool(Tool):
         if self.error is not None:
             raise self.error
         return "执行成功"
+
+
+class ContextTool(ProtocolTool):
+    """记录统一执行上下文，验证超时信息已经传递到工具。"""
+
+    timeout_seconds = 2.0
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.context: ToolExecutionContext | None = None
+
+    def execute_with_context(
+        self,
+        arguments: JsonObject,
+        context: ToolExecutionContext,
+    ) -> str:
+        self.context = context
+        return self.execute(arguments)
 
 
 class SequenceClock:
@@ -209,6 +228,49 @@ class ToolExecutorTests(unittest.TestCase):
         self.assertFalse(record.execution_started)
         self.assertFalse(record.may_have_side_effect)
         self.assertIn("journal unavailable", record.model_result)
+
+    def test_cancellation_before_execution_does_not_start_tool(self) -> None:
+        tool = ProtocolTool(effect=ToolEffect.IRREVERSIBLE_WRITE)
+        executor = ToolExecutor(ToolRegistry([tool]), StaticConfirmer(True))
+
+        record = executor.execute(
+            self.request(),
+            should_cancel=lambda: True,
+        )
+
+        self.assertEqual(record.status, ToolExecutionStatus.FAILED)
+        self.assertEqual(record.error_message, "工具执行已取消。")
+        self.assertEqual(tool.executions, 0)
+        self.assertFalse(record.execution_started)
+        self.assertFalse(record.may_have_side_effect)
+
+    def test_timeout_deadline_is_passed_to_context_aware_tool(self) -> None:
+        tool = ContextTool()
+        executor = ToolExecutor(
+            ToolRegistry([tool]),
+            StaticConfirmer(True),
+            monotonic_clock=lambda: 10.0,
+        )
+
+        record = executor.execute(self.request())
+
+        self.assertEqual(record.status, ToolExecutionStatus.SUCCEEDED)
+        self.assertIsNotNone(tool.context)
+        self.assertEqual(tool.context.deadline, 12.0)
+        self.assertFalse(tool.context.cancelled)
+
+    def test_execution_context_distinguishes_timeout_and_cancellation(self) -> None:
+        current_time = [10.0]
+        context = ToolExecutionContext(
+            should_cancel=lambda: False,
+            deadline=11.0,
+            clock=lambda: current_time[0],
+        )
+
+        self.assertFalse(context.cancelled)
+        current_time[0] = 11.0
+        self.assertTrue(context.timed_out)
+        self.assertTrue(context.cancelled)
 
 
 if __name__ == "__main__":

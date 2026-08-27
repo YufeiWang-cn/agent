@@ -103,6 +103,17 @@ class AgentApiTests(unittest.TestCase):
         self.assertIs(agent.last_turn_outcome, outcome)
         self.assertEqual(agent.run_status, RunStatus.COMPLETED)
 
+    def test_chat_replaces_empty_model_response_with_visible_message(self) -> None:
+        model = CallbackModel([[]])
+        agent = Agent(self.settings, model=model, session_store=self.store)
+        parts: list[str] = []
+
+        outcome = agent.chat("测试空响应", on_text=parts.append)
+
+        self.assertEqual(parts, ["（模型未返回内容）"])
+        self.assertEqual(outcome.final_text, "（模型未返回内容）")
+        self.assertEqual(agent.history()[-1]["content"], "（模型未返回内容）")
+
     def test_chat_emits_structured_runtime_events(self) -> None:
         request = ToolCallRequest(
             id="call_event",

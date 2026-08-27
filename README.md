@@ -154,4 +154,19 @@ python main.py
 python -m unittest discover -s tests -v
 ```
 
-GitHub Actions 会读取 `.python-version` 中的推荐版本，并在代码推送和拉取请求中自动执行同一条测试命令。
+开发环境可以安装额外的质量检查依赖：
+
+```bat
+python -m pip install -e ".[dev]"
+```
+
+提交前建议依次执行代码规范、核心运行时类型标注和覆盖率检查：
+
+```bat
+python -m ruff check src tests
+python -m mypy
+python -m coverage run -m unittest discover -s tests -v
+python -m coverage report
+```
+
+GitHub Actions 会读取 `.python-version` 中的推荐版本，并自动执行上述质量检查。

@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
+from time import monotonic
 from typing import Any
 
 
@@ -12,13 +13,26 @@ JsonObject = dict[str, Any]
 
 @dataclass(frozen=True, slots=True)
 class ToolExecutionContext:
-    """向需要协作式取消的工具传递本轮执行状态。"""
+    """向工具传递协作式取消信号和单次执行期限。"""
 
     should_cancel: Callable[[], bool] | None = None
+    deadline: float | None = None
+    clock: Callable[[], float] = monotonic
+
+    @property
+    def cancellation_requested(self) -> bool:
+        """返回调用方是否明确请求取消当前执行。"""
+        return self.should_cancel is not None and self.should_cancel()
+
+    @property
+    def timed_out(self) -> bool:
+        """返回当前执行是否已经超过统一的单调时钟期限。"""
+        return self.deadline is not None and self.clock() >= self.deadline
 
     @property
     def cancelled(self) -> bool:
-        return self.should_cancel is not None and self.should_cancel()
+        """返回当前执行是否因主动取消或超时而应当停止。"""
+        return self.cancellation_requested or self.timed_out
 
 
 class ToolError(Exception):
@@ -86,7 +100,7 @@ class Tool(ABC):
         arguments: JsonObject,
         context: ToolExecutionContext,
     ) -> str:
-        """执行支持取消上下文的工具；普通工具继续使用旧执行入口。"""
+        """执行支持运行边界的工具；普通工具继续使用旧执行入口。"""
         # 此兼容入口保留了原有工具签名，避免为新增取消能力而改写全部工具。
         return self.execute(arguments)
 

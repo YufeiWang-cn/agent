@@ -1,7 +1,7 @@
 """提供支持 IANA 时区名称的当前日期时间工具。"""
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .base import JsonObject, Tool, ToolExecutionError
@@ -34,14 +34,17 @@ class DateTimeTool(Tool):
 
         timezone_name = timezone_name.strip()
         try:
-            tz = ZoneInfo(timezone_name)
+            resolved_timezone: tzinfo = ZoneInfo(timezone_name)
         except ZoneInfoNotFoundError as error:
             if timezone_name == "Asia/Shanghai":
-                tz = timezone(timedelta(hours=8), name="Asia/Shanghai")
+                resolved_timezone = timezone(
+                    timedelta(hours=8),
+                    name="Asia/Shanghai",
+                )
             else:
                 raise ToolExecutionError(f"未知时区：{timezone_name}") from error
 
-        now = datetime.now(tz)
+        now = datetime.now(resolved_timezone)
         return json.dumps(
             {
                 "timezone": timezone_name,

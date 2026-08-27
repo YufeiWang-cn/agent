@@ -71,14 +71,15 @@ class CalculatorTool(Tool):
 
     def _evaluate(self, node: ast.AST) -> Number:
         if isinstance(node, ast.Constant):
-            if type(node.value) not in (int, float):
+            value = node.value
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ToolExecutionError("表达式只能包含数字。")
-            self._validate_result(node.value)
-            return node.value
+            self._validate_result(value)
+            return value
 
         if isinstance(node, ast.BinOp):
-            operation = BINARY_OPERATORS.get(type(node.op))
-            if operation is None:
+            binary_operation = BINARY_OPERATORS.get(type(node.op))
+            if binary_operation is None:
                 raise ToolExecutionError("表达式包含不支持的运算符。")
 
             left = self._evaluate(node.left)
@@ -86,15 +87,15 @@ class CalculatorTool(Tool):
             if isinstance(node.op, ast.Pow) and abs(right) > MAX_EXPONENT:
                 raise ToolExecutionError("乘方指数过大。")
 
-            result = operation(left, right)
+            result = binary_operation(left, right)
             self._validate_result(result)
             return result
 
         if isinstance(node, ast.UnaryOp):
-            operation = UNARY_OPERATORS.get(type(node.op))
-            if operation is None:
+            unary_operation = UNARY_OPERATORS.get(type(node.op))
+            if unary_operation is None:
                 raise ToolExecutionError("表达式包含不支持的一元运算符。")
-            result = operation(self._evaluate(node.operand))
+            result = unary_operation(self._evaluate(node.operand))
             self._validate_result(result)
             return result
 

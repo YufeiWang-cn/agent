@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from time import monotonic
 
 from .models import ToolCallRequest
 from .permissions import ToolConfirmer
@@ -108,10 +109,12 @@ class ToolExecutor:
         confirmer: ToolConfirmer,
         *,
         clock: Clock | None = None,
+        monotonic_clock: Callable[[], float] = monotonic,
     ) -> None:
         self._registry = registry
         self._confirmer = confirmer
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._monotonic_clock = monotonic_clock
 
     def execute(
         self,
@@ -139,8 +142,10 @@ class ToolExecutor:
             # 例如，run_command 执行 git status 时属于只读操作。
             # 执行 git push 时会产生外部副作用，因此必须要求确认。
             effect = tool.effect_for(arguments)
-            confirmation_requested = tool.requires_confirmation_for(arguments)
-            if confirmation_requested:
+            confirmation_required = tool.requires_confirmation_for(arguments)
+            self._raise_if_cancellation_requested(should_cancel)
+            if confirmation_required:
+                confirmation_requested = True
                 self._notify_confirmation_state(on_confirmation_state, True)
                 try:
                     confirmation_granted = self._confirmer.confirm(
@@ -165,6 +170,8 @@ class ToolExecutor:
                         confirmation_granted=False,
                         execution_started=False,
                     )
+                # 用户确认期间仍可能点击停止，因此执行前需要再次检查取消信号。
+                self._raise_if_cancellation_requested(should_cancel)
 
             start = ToolExecutionStart(
                 call_id=request.id,
@@ -182,11 +189,22 @@ class ToolExecutor:
                 # 完成日志写入后，系统才能真正启动命令。
                 # 否则，崩溃恢复将无法判断命令是否已经执行。
                 before_execution(start)
+            self._raise_if_cancellation_requested(should_cancel)
+            deadline = (
+                self._monotonic_clock() + tool.timeout_seconds
+                if tool.timeout_seconds is not None
+                else None
+            )
+            execution_context = ToolExecutionContext(
+                should_cancel=should_cancel,
+                deadline=deadline,
+                clock=self._monotonic_clock,
+            )
             execution_started = True
             result = tool.execute_with_context(
                 arguments,
-                # 取消信号通过通用上下文传入，旧工具则继续使用兼容执行入口。
-                ToolExecutionContext(should_cancel=should_cancel),
+                # 长时间运行的工具通过统一上下文协作处理取消和超时。
+                execution_context,
             )
             return self._record(
                 request,
@@ -263,6 +281,14 @@ class ToolExecutor:
         """在调用方需要同步运行状态时通知确认阶段的开始或结束。"""
         if callback is not None:
             callback(waiting)
+
+    @staticmethod
+    def _raise_if_cancellation_requested(
+        should_cancel: Callable[[], bool] | None,
+    ) -> None:
+        """在工具尚未启动时安全地响应调用方取消请求。"""
+        if should_cancel is not None and should_cancel():
+            raise ToolExecutionError("工具执行已取消。")
 
     def _record(
         self,

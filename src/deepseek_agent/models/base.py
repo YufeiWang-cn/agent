@@ -7,6 +7,10 @@ from typing import Any, Protocol
 from ..conversation import Message
 
 
+class ModelProtocolError(RuntimeError):
+    """表示模型流式响应不符合 Agent 依赖的事件协议。"""
+
+
 @dataclass(frozen=True, slots=True)
 class TextDelta:
     """表示模型流式返回的一段文本。"""

@@ -5,7 +5,7 @@ from tkinter import messagebox, simpledialog, ttk
 from typing import Callable, Protocol
 
 from ..memory import Project, Session
-from .theme import SIDEBAR_BACKGROUND, SIDEBAR_PANEL, SIDEBAR_TEXT, TEXT_SECONDARY
+from .theme import SIDEBAR_BACKGROUND, SIDEBAR_TEXT, TEXT_SECONDARY
 
 
 ALL_PROJECTS = "__all_projects__"
