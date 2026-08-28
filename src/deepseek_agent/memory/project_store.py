@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
+from ..timekeeping import timestamp_sort_key
 from .project import Project
 
 
@@ -21,7 +22,10 @@ class JsonProjectStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
 
     def list_projects(self) -> list[Project]:
-        return sorted(self._load_all(), key=lambda project: project.created_at)
+        return sorted(
+            self._load_all(),
+            key=lambda project: timestamp_sort_key(project.created_at),
+        )
 
     def create(self, name: str) -> Project:
         try:

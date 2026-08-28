@@ -1,0 +1,17 @@
+{
+  "id": "read_project",
+  "prompt": "请阅读这个项目，找出负责生成问候语的函数，说明它在哪个文件中。不要修改任何文件。",
+  "fixture": "../fixtures/read_project",
+  "approval_policy": "deny",
+  "expected": {
+    "statuses": ["completed"],
+    "allowed_files_changed": [],
+    "required_tools": ["read_text_file"],
+    "answer_required_substrings": ["app.py", "greet"],
+    "allow_side_effects": false
+  },
+  "limits": {
+    "max_tool_calls": 8,
+    "max_identical_tool_calls": 2
+  }
+}

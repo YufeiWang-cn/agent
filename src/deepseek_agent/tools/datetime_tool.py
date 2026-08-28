@@ -1,9 +1,10 @@
 """提供支持 IANA 时区名称的当前日期时间工具。"""
 
 import json
-from datetime import datetime, timedelta, timezone, tzinfo
+from datetime import datetime, tzinfo
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from ..timekeeping import CHINA_TIMEZONE, CHINA_TIMEZONE_NAME
 from .base import JsonObject, Tool, ToolExecutionError
 
 
@@ -28,7 +29,7 @@ class DateTimeTool(Tool):
     }
 
     def execute(self, arguments: JsonObject) -> str:
-        timezone_name = arguments.get("timezone", "Asia/Shanghai")
+        timezone_name = arguments.get("timezone", CHINA_TIMEZONE_NAME)
         if not isinstance(timezone_name, str) or not timezone_name.strip():
             raise ToolExecutionError("timezone 必须是非空字符串。")
 
@@ -36,11 +37,8 @@ class DateTimeTool(Tool):
         try:
             resolved_timezone: tzinfo = ZoneInfo(timezone_name)
         except ZoneInfoNotFoundError as error:
-            if timezone_name == "Asia/Shanghai":
-                resolved_timezone = timezone(
-                    timedelta(hours=8),
-                    name="Asia/Shanghai",
-                )
+            if timezone_name == CHINA_TIMEZONE_NAME:
+                resolved_timezone = CHINA_TIMEZONE
             else:
                 raise ToolExecutionError(f"未知时区：{timezone_name}") from error
 

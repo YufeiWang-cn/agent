@@ -1,0 +1,20 @@
+{
+  "id": "multi_file_config",
+  "prompt": "为问候功能增加可配置后缀：在 config.py 中新增 GREETING_SUFFIX = \"!\"，并修改 app.py，让 greet(name) 每次调用时都动态读取 config.GREETING_PREFIX 和 config.GREETING_SUFFIX，返回前缀、一个空格、姓名和后缀。greet(\"Ada\") 必须精确返回 \"Hello Ada!\"，不得包含逗号。同步更新测试，让断言直接表达这个新需求，然后运行测试。",
+  "fixture": "../fixtures/multi_file_config",
+  "grader_fixture": "../grader_fixtures/multi_file_config",
+  "approval_policy": "allow",
+  "expected": {
+    "statuses": ["completed"],
+    "required_files_changed": ["app.py", "config.py", "tests/test_app.py"],
+    "allowed_files_changed": ["app.py", "config.py", "tests/test_app.py"],
+    "commands": [
+      {"argv": ["{python}", "-m", "unittest", "discover", "-s", "tests", "-q"], "timeout_seconds": 30},
+      {"argv": ["{python}", "-m", "unittest", "discover", "-s", "hidden_tests", "-q"], "timeout_seconds": 30}
+    ],
+    "required_tools": ["run_command"],
+    "answer_required_substrings": ["测试"],
+    "allow_side_effects": true
+  },
+  "limits": {"max_tool_calls": 20, "max_identical_tool_calls": 3}
+}

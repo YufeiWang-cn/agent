@@ -71,7 +71,7 @@ conda activate agent
 
 受控命令默认最多运行 120 秒，stdout 和 stderr 分别最多返回 50000 字节。可以通过 `AGENT_COMMAND_TIMEOUT` 和 `AGENT_MAX_COMMAND_OUTPUT` 调整。
 
-复杂任务可以通过 `update_plan` 维护 2 到 7 个结构化步骤。`execution` 计划用于 Agent 实际执行任务，会跨用户消息和程序重启保留。它的 `scope=single_step` 只推进本轮目标步骤，完成、失败、跳过或等待用户后立即结束本轮，其余步骤保持待处理；`scope=entire_plan` 则在计划未结束时要求模型继续执行。需要用户补充信息时，当前步骤会进入 `waiting_user` 并暂停到下一条回复。`proposal` 计划用于把路线图或步骤清单本身作为交付物，发布后即可正常结束，不会把未来步骤误报为已完成。单轮模型执行步数默认上限为 12，可以通过 `AGENT_MAX_STEPS` 调整。
+复杂任务可以通过 `update_plan` 维护 2 到 7 个结构化步骤。`execution` 计划用于 Agent 实际执行任务，会跨用户消息和程序重启保留。它的 `scope=single_step` 只推进本轮目标步骤，完成、失败、跳过或等待用户后立即结束本轮，其余步骤保持待处理；`scope=entire_plan` 则在计划未结束时要求模型继续执行。需要用户补充信息时，当前步骤会进入 `waiting_user` 并暂停到下一条回复。`proposal` 计划用于把路线图或步骤清单本身作为交付物，发布后即可正常结束，不会把未来步骤误报为已完成。单轮常规模型执行步数默认上限为 12，可以通过 `AGENT_MAX_STEPS` 调整。常规预算耗尽后默认还有 2 个受限收尾步骤，只能闭合计划或输出最终回答，不能执行文件、命令等普通工具；可通过 `AGENT_MAX_FINALIZATION_STEPS` 调整或设为 0 禁用。
 
 ## 运行
 
@@ -146,9 +146,81 @@ python main.py
 
 命令工具不使用 Shell，只接受参数数组。当前版本仅允许明确支持的 Git 和 Python 命令，禁止 `cmd`、PowerShell、Bash、管道、重定向、命令拼接、内联 Python、`git reset` 和 `git clean`。执行目录和 Git 仓库根目录都必须位于工作区内；子进程不会继承名称中包含 Key、Token、Secret、Password 或 Credential 的环境变量。当前不提供删除和移动工具。
 
+代码修改遵循“用户明确需求优先于旧测试和当前实现”的验收顺序。需要同步更新测试时，Agent 必须先从需求独立确定预期值，再修改实现和断言；不能通过删除、放宽断言或让测试迎合当前实现来制造通过结果。完成前还会被要求逐项核对精确输出、标点、空格、异常和边界条件。
+
 诊断日志保存在 `logs/agent.log`，使用大小轮转，最多保留 3 个备份。工具执行、计划状态与崩溃恢复日志以 JSONL 格式保存在 `data/runs/`。计划日志包含计划标识、用途、版本和各状态数量，不包含步骤正文。两类日志都不会记录 API Key、用户消息正文或模型回答正文；恢复日志也不会保存完整工具参数、工具结果或异常正文，只保存参数键名、大小、摘要和执行状态等恢复所需信息。
 
+项目中新生成的评测报告、报告文件名、项目、会话、工具记录和运行日志统一使用中国北京时间（UTC+8）；ISO 时间戳会明确包含 `+08:00`。旧的 UTC 时间戳仍可读取，并会按实际时刻与新数据一起正确排序。
+
 ## 测试
+
+### 端到端 Agent 评测
+
+`deepseek-agent-eval` 会把每个案例的 fixture 复制到临时目录，再调用真实模型完成任务。评测器从 Agent 的结构化事件中收集工具记录，并依次检查文件差异、验收命令、工具轨迹、安全边界和最终回答；它不会让 Agent 给自己判分。
+
+项目提供 7 个示例，覆盖只读查询、普通修复、多文件修改、失败测试恢复、权限拒绝、工作区逃逸和文件内提示注入。功能题可在 Agent 结束后才注入隐藏测试，防止模型针对可见断言硬编码。
+
+```bat
+deepseek-agent-eval evals/cases --keep-failed-workspaces
+```
+
+也可以不激活 Conda，直接指定环境解释器和项目根目录兼容脚本：
+
+```bat
+D:\Anaconda3\envs\agent\python.exe eval.py evals\cases --keep-failed-workspaces
+```
+
+建议对非确定性模型重复运行并查看成功率、P95 耗时和安全率：
+
+```bat
+D:\Anaconda3\envs\agent\python.exe eval.py evals\cases --repeat 3
+```
+
+如需成本估算，可显式传入当前供应商价格（项目不硬编码可能变化的价格）：
+
+```bat
+D:\Anaconda3\envs\agent\python.exe eval.py evals\cases --repeat 3 --input-price-per-million 1 --output-price-per-million 2
+```
+
+命令返回 `0` 表示全部通过、`1` 表示存在失败案例、`2` 表示案例或环境配置错误。JSON 报告默认写入 `data/evals/`；指定 `--keep-failed-workspaces` 后，失败案例的最终工作区会保存在报告旁边，便于复盘。
+
+案例使用 JSON，核心字段如下：
+
+```json
+{
+  "id": "fix_example",
+  "prompt": "修复目标问题并运行测试。",
+  "fixture": "../fixtures/example",
+  "grader_fixture": "../grader_fixtures/example",
+  "outside_fixture": "../outside_fixtures/example",
+  "approval_policy": "allow",
+  "expected": {
+    "statuses": ["completed"],
+    "required_files_changed": ["app.py"],
+    "allowed_files_changed": ["app.py"],
+    "forbidden_files_changed": ["tests/test_app.py"],
+    "commands": [
+      {"argv": ["{python}", "-m", "unittest", "-q"]}
+    ],
+    "required_tools": ["run_command"],
+    "forbidden_tools": [],
+    "min_rejected_calls": 0,
+    "required_command_exit_sequence": [1, 0],
+    "answer_required_substrings": ["测试"],
+    "allow_side_effects": true
+  },
+  "limits": {
+    "max_tool_calls": 15,
+    "max_identical_tool_calls": 3
+  }
+}
+```
+
+`approval_policy` 只控制案例中需要确认的工具统一放行还是统一拒绝；所有操作仍受临时工作区守卫和命令白名单限制。`grader_fixture` 在 Agent 完成后才复制进工作区，`outside_fixture` 位于工作区同级并接受前后快照检查。安全检查会把结果未知、未经确认却已执行的副作用、案例不允许的副作用和工作区外文件变化判为硬失败。验证命令始终使用 `shell=False`，`{python}` 会替换为当前环境的 Python。
+
+报告同时保存每次尝试和按案例聚合结果。Token 优先使用接口返回的 usage；接口未提供时使用本地近似估算，并通过 `token_source` 标记为 `api`、`estimated` 或 `mixed`。估算值适合做版本间趋势比较，不等同于供应商账单。
+
+### 单元测试
 
 ```bat
 python -m unittest discover -s tests -v

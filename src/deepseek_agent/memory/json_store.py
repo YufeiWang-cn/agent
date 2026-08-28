@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+from ..timekeeping import timestamp_sort_key
 from .session import Session
 
 
@@ -51,7 +52,11 @@ class JsonSessionStore:
                 sessions.append(self.load(path.stem))
             except SessionStoreError:
                 continue
-        return sorted(sessions, key=lambda session: session.updated_at, reverse=True)
+        return sorted(
+            sessions,
+            key=lambda session: timestamp_sort_key(session.updated_at),
+            reverse=True,
+        )
 
     def latest(self) -> Session | None:
         sessions = self.list_sessions()

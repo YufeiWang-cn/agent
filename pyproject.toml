@@ -23,6 +23,7 @@ dev = [
 [project.scripts]
 deepseek-agent = "deepseek_agent.cli:main"
 deepseek-agent-gui = "deepseek_agent.gui_app:main"
+deepseek-agent-eval = "deepseek_agent.evaluation.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

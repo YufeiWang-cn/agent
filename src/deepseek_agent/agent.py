@@ -125,6 +125,7 @@ class Agent:
         # 计划运行时独立维护计划快照和单步边界，避免把界面状态混入消息协议。
         self._plan_runtime = PlanRuntime()
         self._max_agent_steps = settings.max_agent_steps
+        self._max_finalization_steps = settings.max_finalization_steps
         self._tools = (
             tools
             if tools is not None
@@ -265,12 +266,56 @@ class Agent:
             )
             progress.force_plan_continuation = False
 
+        return self._run_finalization_loop(progress, callbacks)
+
+    def _run_finalization_loop(
+        self,
+        progress: TurnProgress,
+        callbacks: TurnCallbacks,
+    ) -> TurnOutcome:
+        """在常规预算耗尽后，只允许闭合计划和生成最终回答。"""
+        for _step in range(self._max_finalization_steps):
+            answer_parts, tool_requests = self._stream_model_step(
+                progress,
+                callbacks,
+                finalization=True,
+            )
+            progress.steps_completed += 1
+
+            if any(request.name != "update_plan" for request in tool_requests):
+                return self._finish_step_limit(progress, callbacks)
+
+            if tool_requests:
+                self._conversation.add_assistant_tool_calls(
+                    [request.as_message_dict() for request in tool_requests],
+                    content="".join(answer_parts) or None,
+                )
+                self._execute_tools(
+                    tool_requests,
+                    on_tool_call=callbacks.on_tool_call,
+                    on_tool_result=callbacks.on_tool_result,
+                    on_event=callbacks.on_event,
+                    should_cancel=callbacks.should_cancel,
+                )
+                progress.force_plan_continuation = False
+                continue
+
+            outcome = self._handle_text_response(
+                answer_parts,
+                progress,
+                callbacks,
+            )
+            if outcome is not None:
+                return outcome
+
         return self._finish_step_limit(progress, callbacks)
 
     def _stream_model_step(
         self,
         progress: TurnProgress,
         callbacks: TurnCallbacks,
+        *,
+        finalization: bool = False,
     ) -> tuple[list[str], list[ToolCallRequest]]:
         """收集一次模型响应，并立即转发文本增量事件。"""
         self._raise_if_cancelled(callbacks.should_cancel)
@@ -278,8 +323,16 @@ class Agent:
         tool_requests: list[ToolCallRequest] = []
         model_messages = self._prepare_model_messages(
             force_plan_continuation=progress.force_plan_continuation,
+            finalization=finalization,
         )
-        for event in self._model.stream(model_messages, self._tools.schemas):
+        tool_schemas = self._tools.schemas
+        if finalization:
+            tool_schemas = [
+                schema
+                for schema in tool_schemas
+                if schema.get("function", {}).get("name") == "update_plan"
+            ]
+        for event in self._model.stream(model_messages, tool_schemas):
             self._raise_if_cancelled(callbacks.should_cancel)
             if isinstance(event, TextDelta):
                 self._emit_text(event.content, callbacks)
@@ -352,7 +405,10 @@ class Agent:
         callbacks: TurnCallbacks,
     ) -> TurnOutcome:
         """记录最大执行步数，并以未完成状态结束当前轮次。"""
-        message = f"Agent 已达到最大执行步数 {self._max_agent_steps}，任务已停止。"
+        message = (
+            f"Agent 已达到最大执行步数：常规步骤 {self._max_agent_steps} 和收尾步骤 "
+            f"{self._max_finalization_steps} 的上限，任务已停止。"
+        )
         self._conversation.add_assistant(message)
         self._save_completed_turn(progress.checkpoint)
         self._emit_text(message, callbacks)
@@ -741,11 +797,13 @@ class Agent:
         self,
         *,
         force_plan_continuation: bool,
+        finalization: bool = False,
     ) -> list[Message]:
         """注入计划运行时约束，再按上下文预算裁剪消息。"""
         messages = self._plan_runtime.attach_to_messages(
             self._conversation.messages,
             force_continuation=force_plan_continuation,
+            finalization=finalization,
         )
         return list(self._context_manager.prepare(messages).messages)
 

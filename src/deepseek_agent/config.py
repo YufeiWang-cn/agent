@@ -18,6 +18,7 @@ DEFAULT_MAX_FILE_SIZE = 100_000
 DEFAULT_COMMAND_TIMEOUT = 120.0
 DEFAULT_MAX_COMMAND_OUTPUT = 50_000
 DEFAULT_MAX_AGENT_STEPS = 12
+DEFAULT_MAX_FINALIZATION_STEPS = 2
 
 
 def _read_int_env(
@@ -95,6 +96,7 @@ class Settings:
     command_timeout: float = DEFAULT_COMMAND_TIMEOUT
     max_command_output: int = DEFAULT_MAX_COMMAND_OUTPUT
     max_agent_steps: int = DEFAULT_MAX_AGENT_STEPS
+    max_finalization_steps: int = DEFAULT_MAX_FINALIZATION_STEPS
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -156,6 +158,12 @@ class Settings:
             minimum=1,
             error_message="AGENT_MAX_STEPS 必须是正整数。",
         )
+        max_finalization_steps = _read_int_env(
+            "AGENT_MAX_FINALIZATION_STEPS",
+            DEFAULT_MAX_FINALIZATION_STEPS,
+            minimum=0,
+            error_message="AGENT_MAX_FINALIZATION_STEPS 不能小于 0。",
+        )
 
         return cls(
             api_key=api_key,
@@ -174,4 +182,5 @@ class Settings:
             command_timeout=command_timeout,
             max_command_output=max_command_output,
             max_agent_steps=max_agent_steps,
+            max_finalization_steps=max_finalization_steps,
         )

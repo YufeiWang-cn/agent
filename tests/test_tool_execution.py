@@ -113,6 +113,17 @@ class ToolExecutorTests(unittest.TestCase):
         self.assertEqual(record.model_result, "执行成功")
         self.assertEqual(record.duration_seconds, 0.25)
         self.assertFalse(record.confirmation_requested)
+
+    def test_default_clock_uses_china_timezone(self) -> None:
+        executor = ToolExecutor(
+            ToolRegistry([ProtocolTool()]),
+            StaticConfirmer(True),
+        )
+
+        record = executor.execute(self.request())
+
+        self.assertEqual(record.started_at.utcoffset(), timedelta(hours=8))
+        self.assertEqual(record.finished_at.utcoffset(), timedelta(hours=8))
         self.assertTrue(record.execution_started)
         self.assertFalse(record.may_have_side_effect)
 

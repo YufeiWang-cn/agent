@@ -27,6 +27,7 @@ class JsonProjectStoreTests(unittest.TestCase):
 
         self.assertEqual(reloaded_store.get(project.id[:8]), project)
         self.assertEqual(reloaded_store.list_projects(), [project])
+        self.assertTrue(project.created_at.endswith("+08:00"))
 
     def test_project_name_is_trimmed_and_must_be_unique(self) -> None:
         project = self.store.create("  Python  ")

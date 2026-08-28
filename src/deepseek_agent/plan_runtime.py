@@ -102,15 +102,27 @@ class PlanRuntime:
         messages: list[Message],
         *,
         force_continuation: bool,
+        finalization: bool = False,
     ) -> list[Message]:
         """把计划快照作为临时约束注入模型消息，不修改会话历史。"""
         prepared = [dict(message) for message in messages]
-        if not prepared or self._current is None:
+        if not prepared:
+            return prepared
+
+        finalization_message = (
+            "[运行时控制] 常规执行步数已经用尽，现在只能收尾。"
+            "如现有计划状态不准确，只能调用 update_plan 闭合计划；"
+            "否则不得调用工具，必须根据已有结果给出最终回答。"
+            "不得请求其他工具或开展新工作。"
+        )
+        if self._current is None:
+            if finalization:
+                prepared.append({"role": "user", "content": finalization_message})
             return prepared
 
         plan = self._current
         instruction = self._runtime_instruction(plan)
-        if force_continuation:
+        if force_continuation and not finalization:
             instruction += self._continuation_instruction(plan)
 
         snapshot = json.dumps(plan.to_dict(), ensure_ascii=False)
@@ -120,7 +132,9 @@ class PlanRuntime:
             **first,
             "content": str(first.get("content", "")) + runtime_context,
         }
-        if force_continuation:
+        if finalization:
+            prepared.append({"role": "user", "content": finalization_message})
+        elif force_continuation:
             # DeepSeek 不接受以普通 assistant 消息结尾的续执行请求。
             prepared.append(
                 {

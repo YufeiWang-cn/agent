@@ -54,6 +54,12 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(result["timezone"], "Asia/Shanghai")
         self.assertIn("datetime", result)
 
+        default_result = json.loads(
+            self.registry.execute("get_current_time", "{}")
+        )
+        self.assertEqual(default_result["timezone"], "Asia/Shanghai")
+        self.assertTrue(default_result["datetime"].endswith("+08:00"))
+
 
 if __name__ == "__main__":
     unittest.main()

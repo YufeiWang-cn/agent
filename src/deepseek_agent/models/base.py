@@ -37,7 +37,16 @@ class ToolCallRequest:
         }
 
 
-StreamEvent = TextDelta | ToolCallRequest
+@dataclass(frozen=True, slots=True)
+class UsageUpdate:
+    """表示供应商在流式响应中返回的 Token 用量。"""
+
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+
+
+StreamEvent = TextDelta | ToolCallRequest | UsageUpdate
 
 
 class ChatModel(Protocol):

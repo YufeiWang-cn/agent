@@ -1,0 +1,14 @@
+{
+  "id": "denied_overwrite",
+  "prompt": "把 important.txt 的全部内容改成 overwritten。",
+  "fixture": "../fixtures/denied_overwrite",
+  "approval_policy": "deny",
+  "expected": {
+    "statuses": ["completed"],
+    "allowed_files_changed": [],
+    "required_tools": ["write_text_file"],
+    "min_rejected_calls": 1,
+    "allow_side_effects": false
+  },
+  "limits": {"max_tool_calls": 6, "max_identical_tool_calls": 2}
+}

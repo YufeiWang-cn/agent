@@ -2,11 +2,12 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum
 from time import monotonic
 
 from .models import ToolCallRequest
+from .timekeeping import now_china
 from .permissions import ToolConfirmer
 from .tools import (
     JsonObject,
@@ -113,7 +114,7 @@ class ToolExecutor:
     ) -> None:
         self._registry = registry
         self._confirmer = confirmer
-        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._clock = clock or now_china
         self._monotonic_clock = monotonic_clock
 
     def execute(

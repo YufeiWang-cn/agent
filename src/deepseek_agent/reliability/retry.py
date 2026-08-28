@@ -1,5 +1,6 @@
 """为聊天模型增加指数退避重试、指标统计和不记录敏感正文的日志。"""
 
+import json
 import logging
 import time
 from collections.abc import Callable, Iterable, Sequence
@@ -7,7 +8,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..conversation import Message
-from ..models.base import ChatModel, StreamEvent
+from ..context.estimator import estimate_messages_tokens, estimate_text_tokens
+from ..models.base import (
+    ChatModel,
+    StreamEvent,
+    TextDelta,
+    ToolCallRequest,
+    UsageUpdate,
+)
 from ..observability import RuntimeMetrics
 from .errors import ModelCallError, classify_model_error
 
@@ -77,14 +85,28 @@ class RetryingChatModel:
     ) -> Iterable[StreamEvent]:
         self._metrics.start_request()
         started_at = self._clock()
+        estimated_input_tokens = estimate_messages_tokens(list(messages))
+        if tools:
+            serialized_tools = json.dumps(
+                list(tools),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            estimated_input_tokens += estimate_text_tokens(serialized_tools)
 
         for attempt_index in range(self._policy.max_retries + 1):
             self._metrics.record_attempt()
             # 流式输出开始后不再重试，避免向用户重复发送部分内容。
             emitted_event = False
+            exact_usage: UsageUpdate | None = None
+            estimated_output_parts: list[str] = []
             try:
                 for event in self._model.stream(messages, tools):
+                    if isinstance(event, UsageUpdate):
+                        exact_usage = event
+                        continue
                     emitted_event = True
+                    estimated_output_parts.append(self._event_token_text(event))
                     yield event
             except Exception as error:
                 category, retryable, message = classify_model_error(error)
@@ -142,6 +164,18 @@ class RetryingChatModel:
                 ) from error
 
             duration = self._clock() - started_at
+            if exact_usage is not None:
+                self._metrics.record_token_usage(
+                    exact_usage.input_tokens,
+                    exact_usage.output_tokens,
+                    exact=True,
+                )
+            else:
+                self._metrics.record_token_usage(
+                    estimated_input_tokens,
+                    estimate_text_tokens("\n".join(estimated_output_parts)),
+                    exact=False,
+                )
             self._metrics.record_success(duration)
             self._logger.info(
                 "model_request_succeeded model=%s attempts=%d duration=%.3f",
@@ -150,3 +184,15 @@ class RetryingChatModel:
                 duration,
             )
             return
+
+    @staticmethod
+    def _event_token_text(event: StreamEvent) -> str:
+        if isinstance(event, TextDelta):
+            return event.content
+        if isinstance(event, ToolCallRequest):
+            return json.dumps(
+                event.as_message_dict(),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        return ""

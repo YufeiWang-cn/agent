@@ -2,16 +2,16 @@
 
 from copy import deepcopy
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
 from ..conversation import Message
 from ..planning import TaskPlan
+from ..timekeeping import iso_now_china
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return iso_now_china()
 
 
 @dataclass(slots=True)

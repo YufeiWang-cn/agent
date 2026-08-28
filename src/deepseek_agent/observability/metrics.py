@@ -13,6 +13,10 @@ class RuntimeMetrics:
     failed_requests: int = 0
     retries: int = 0
     total_duration_seconds: float = 0.0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    usage_api_reports: int = 0
+    usage_estimated_reports: int = 0
 
     def start_request(self) -> None:
         self.model_requests += 1
@@ -30,6 +34,34 @@ class RuntimeMetrics:
     def record_failure(self, duration_seconds: float) -> None:
         self.failed_requests += 1
         self.total_duration_seconds += duration_seconds
+
+    def record_token_usage(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        *,
+        exact: bool,
+    ) -> None:
+        self.input_tokens += input_tokens
+        self.output_tokens += output_tokens
+        if exact:
+            self.usage_api_reports += 1
+        else:
+            self.usage_estimated_reports += 1
+
+    @property
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens
+
+    @property
+    def token_source(self) -> str:
+        if self.usage_api_reports and self.usage_estimated_reports:
+            return "mixed"
+        if self.usage_api_reports:
+            return "api"
+        if self.usage_estimated_reports:
+            return "estimated"
+        return "unavailable"
 
     @property
     def average_duration_seconds(self) -> float:

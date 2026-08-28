@@ -8,5 +8,6 @@ build/
 dist/
 data/sessions/
 data/runs/
+data/evals/
 data/projects.json
 logs/

@@ -5,7 +5,7 @@ import json
 import os
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
@@ -13,6 +13,7 @@ from uuid import uuid4
 from .models import ToolCallRequest
 from .planning import PlanStepStatus, TaskPlan
 from .tool_execution import ToolExecutionRecord, ToolExecutionStart
+from .timekeeping import now_china, timestamp_sort_key
 
 
 JOURNAL_VERSION = 1
@@ -74,7 +75,7 @@ class RunJournal:
         self._directory = Path(directory)
         self._directory.mkdir(parents=True, exist_ok=True)
         self._run_id = run_id or uuid4().hex
-        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._clock = clock or now_china
         self._durable = durable
         self._lock = threading.Lock()
 
@@ -269,7 +270,12 @@ class RunJournal:
             )
             for event in pending.values()
         ]
-        return tuple(sorted(issues, key=lambda item: item.started_at))
+        return tuple(
+            sorted(
+                issues,
+                key=lambda item: timestamp_sort_key(item.started_at),
+            )
+        )
 
     def _append(self, event_type: str, **payload: Any) -> None:
         """以单行形式追加事件，并在需要时强制刷新到磁盘。"""

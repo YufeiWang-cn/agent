@@ -22,6 +22,7 @@ class SettingsTests(unittest.TestCase):
                 "DEEPSEEK_API_KEY": "test-key",
                 "AGENT_WORKSPACE": temporary_directory,
                 "AGENT_MAX_STEPS": "7",
+                "AGENT_MAX_FINALIZATION_STEPS": "3",
                 "AGENT_COMMAND_TIMEOUT": "2.5",
             }
             with patch.dict(os.environ, environment, clear=True):
@@ -29,6 +30,7 @@ class SettingsTests(unittest.TestCase):
                     settings = Settings.from_env()
 
         self.assertEqual(settings.max_agent_steps, 7)
+        self.assertEqual(settings.max_finalization_steps, 3)
         self.assertEqual(settings.command_timeout, 2.5)
         self.assertEqual(settings.workspace_root, Path(temporary_directory).resolve())
 
@@ -40,6 +42,19 @@ class SettingsTests(unittest.TestCase):
         with patch.dict(os.environ, environment, clear=True):
             with patch("deepseek_agent.config.load_dotenv"):
                 with self.assertRaisesRegex(RuntimeError, "AGENT_MAX_STEPS"):
+                    Settings.from_env()
+
+    def test_from_env_rejects_negative_finalization_steps(self) -> None:
+        environment = {
+            "DEEPSEEK_API_KEY": "test-key",
+            "AGENT_MAX_FINALIZATION_STEPS": "-1",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            with patch("deepseek_agent.config.load_dotenv"):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "AGENT_MAX_FINALIZATION_STEPS",
+                ):
                     Settings.from_env()
 
 

@@ -485,7 +485,11 @@ class PlanningAgentTests(unittest.TestCase):
             ]
         )
         agent = Agent(
-            replace(self.settings, max_agent_steps=3),
+            replace(
+                self.settings,
+                max_agent_steps=3,
+                max_finalization_steps=0,
+            ),
             model=model,
             session_store=self.store,
         )
@@ -498,6 +502,41 @@ class PlanningAgentTests(unittest.TestCase):
         self.assertEqual(
             self.store.load(agent.session_id).plan,
             agent.current_plan,
+        )
+
+    def test_finalization_can_close_plan_and_return_final_answer(self) -> None:
+        model = QueueModel(
+            [
+                [self._update_request("plan_1", _plan_items())],
+                [
+                    self._update_request(
+                        "plan_2",
+                        _plan_items("completed", "completed"),
+                    )
+                ],
+                [TextDelta("测试已经通过，任务完成。")],
+            ]
+        )
+        agent = Agent(
+            replace(
+                self.settings,
+                max_agent_steps=1,
+                max_finalization_steps=2,
+            ),
+            model=model,
+            session_store=self.store,
+        )
+
+        outcome = agent.chat("执行复杂任务")
+
+        self.assertEqual(outcome.status, RunStatus.COMPLETED)
+        self.assertEqual(outcome.steps_completed, 3)
+        self.assertTrue(agent.current_plan.terminal)
+        self.assertEqual(outcome.final_text, "测试已经通过，任务完成。")
+        self.assertIn("收尾", model.message_batches[1][-1]["content"])
+        self.assertEqual(
+            [schema["function"]["name"] for schema in model.schemas],
+            ["update_plan"],
         )
 
     def test_replacing_unfinished_plan_requires_reason_and_new_identity(self) -> None:

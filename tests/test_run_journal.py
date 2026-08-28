@@ -62,6 +62,7 @@ class RunJournalTests(unittest.TestCase):
         self.assertNotIn("secret.txt", content)
         self.assertEqual(event["arguments"]["keys"], ["content", "path"])
         self.assertEqual(len(event["arguments"]["sha256"]), 64)
+        self.assertTrue(event["timestamp"].endswith("+08:00"))
 
     def test_unfinished_tool_is_reported_as_recovery_issue(self) -> None:
         self.journal.record_tool_started("turn_test", self.start())

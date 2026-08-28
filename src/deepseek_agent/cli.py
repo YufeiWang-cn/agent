@@ -294,6 +294,9 @@ class CliApplication:
             f"  成功请求数：{metrics.successful_requests}\n"
             f"  失败请求数：{metrics.failed_requests}\n"
             f"  自动重试次数：{metrics.retries}\n"
+            f"  输入 Token：{metrics.input_tokens}\n"
+            f"  输出 Token：{metrics.output_tokens}\n"
+            f"  Token 来源：{metrics.token_source}\n"
             f"  平均请求耗时：{metrics.average_duration_seconds:.3f} 秒"
         )
 

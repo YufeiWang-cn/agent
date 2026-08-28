@@ -55,6 +55,7 @@ class JsonSessionStoreTests(unittest.TestCase):
         self.assertEqual(loaded.id, session.id)
         self.assertEqual(loaded.messages, messages)
         self.assertEqual(loaded.project_id, "project-1")
+        self.assertTrue(loaded.created_at.endswith("+08:00"))
 
     def test_old_session_without_project_id_remains_compatible(self) -> None:
         session = Session.create([{"role": "system", "content": "system"}])
@@ -91,6 +92,18 @@ class JsonSessionStoreTests(unittest.TestCase):
         sessions = self.store.list_sessions()
 
         self.assertEqual([session.id for session in sessions], [newer.id, older.id])
+
+    def test_sessions_with_mixed_offsets_sort_by_actual_instant(self) -> None:
+        earlier = Session.create([{"role": "system", "content": "system"}])
+        later = Session.create([{"role": "system", "content": "system"}])
+        earlier.updated_at = "2026-01-01T00:30:00+08:00"
+        later.updated_at = "2025-12-31T17:00:00+00:00"
+        self.store.save(earlier)
+        self.store.save(later)
+
+        sessions = self.store.list_sessions()
+
+        self.assertEqual([session.id for session in sessions], [later.id, earlier.id])
 
     def test_delete_accepts_short_id(self) -> None:
         session = Session.create([{"role": "system", "content": "system"}])

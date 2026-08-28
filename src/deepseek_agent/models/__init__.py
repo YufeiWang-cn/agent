@@ -6,6 +6,7 @@ from .base import (
     StreamEvent,
     TextDelta,
     ToolCallRequest,
+    UsageUpdate,
 )
 from .deepseek import DeepSeekModel
 
@@ -16,4 +17,5 @@ __all__ = [
     "StreamEvent",
     "TextDelta",
     "ToolCallRequest",
+    "UsageUpdate",
 ]

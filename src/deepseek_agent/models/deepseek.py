@@ -8,7 +8,13 @@ from openai import OpenAI
 
 from ..config import Settings
 from ..conversation import Message
-from .base import ModelProtocolError, StreamEvent, TextDelta, ToolCallRequest
+from .base import (
+    ModelProtocolError,
+    StreamEvent,
+    TextDelta,
+    ToolCallRequest,
+    UsageUpdate,
+)
 
 
 DEEPSEEK_MODELS = (
@@ -97,6 +103,24 @@ class DeepSeekModel:
         finish_reasons: set[str] = set()
 
         for chunk in response:
+            usage = getattr(chunk, "usage", None)
+            if usage is not None:
+                prompt_tokens = getattr(usage, "prompt_tokens", None)
+                completion_tokens = getattr(usage, "completion_tokens", None)
+                total_tokens = getattr(usage, "total_tokens", None)
+                if (
+                    isinstance(prompt_tokens, int)
+                    and not isinstance(prompt_tokens, bool)
+                    and isinstance(completion_tokens, int)
+                    and not isinstance(completion_tokens, bool)
+                    and isinstance(total_tokens, int)
+                    and not isinstance(total_tokens, bool)
+                ):
+                    yield UsageUpdate(
+                        input_tokens=prompt_tokens,
+                        output_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                    )
             if not chunk.choices:
                 continue
 

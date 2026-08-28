@@ -55,6 +55,15 @@ class ProjectMetadataTests(unittest.TestCase):
             env_example,
         )
 
+    def test_system_prompt_keeps_tests_independent_from_implementation(self) -> None:
+        prompt = (
+            PROJECT_ROOT / "src" / "deepseek_agent" / "prompts" / "system.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("用户明确表达的行为和验收条件是首要依据", prompt)
+        self.assertIn("不得为了让当前实现通过而删除、放宽或反向调整有效断言", prompt)
+        self.assertIn("实现与需求冲突时应修复实现", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

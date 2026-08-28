@@ -12,6 +12,7 @@ from deepseek_agent.models import (
     ModelProtocolError,
     TextDelta,
     ToolCallRequest,
+    UsageUpdate,
 )
 
 
@@ -44,6 +45,7 @@ def _chunk(
     tool_calls=(),
     finish_reason: str | None = None,
     include_choice: bool = True,
+    usage=None,
 ):
     choices = []
     if include_choice:
@@ -56,7 +58,7 @@ def _chunk(
                 finish_reason=finish_reason,
             )
         )
-    return SimpleNamespace(choices=choices)
+    return SimpleNamespace(choices=choices, usage=usage)
 
 
 class DeepSeekModelTests(unittest.TestCase):
@@ -134,6 +136,21 @@ class DeepSeekModelTests(unittest.TestCase):
         )
 
         self.assertEqual(list(model.stream([], [])), [])
+
+    def test_usage_chunk_is_forwarded_even_without_choices(self) -> None:
+        usage = SimpleNamespace(
+            prompt_tokens=120,
+            completion_tokens=30,
+            total_tokens=150,
+        )
+        model, _completions = self.build_model(
+            [_chunk(include_choice=False, usage=usage)]
+        )
+
+        self.assertEqual(
+            list(model.stream([], [])),
+            [UsageUpdate(120, 30, 150)],
+        )
 
     def test_missing_tool_name_is_reported_as_protocol_error(self) -> None:
         model, _completions = self.build_model(

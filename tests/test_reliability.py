@@ -8,7 +8,7 @@ from _path_setup import add_src_to_path
 
 add_src_to_path()
 
-from deepseek_agent.models import TextDelta
+from deepseek_agent.models import TextDelta, UsageUpdate
 from deepseek_agent.observability import RuntimeMetrics, build_file_logger
 from deepseek_agent.reliability import (
     ModelCallError,
@@ -100,6 +100,33 @@ class RetryingChatModelTests(unittest.TestCase):
         self.assertEqual(clock.sleeps, [])
         self.assertEqual(metrics.failed_requests, 1)
 
+    def test_api_usage_is_consumed_and_recorded_exactly(self) -> None:
+        model, _base_model, metrics, _clock = self.build_model(
+            [[TextDelta("ok"), UsageUpdate(100, 25, 125)]]
+        )
+
+        self.assertEqual(list(model.stream([], [])), [TextDelta("ok")])
+        self.assertEqual(metrics.input_tokens, 100)
+        self.assertEqual(metrics.output_tokens, 25)
+        self.assertEqual(metrics.total_tokens, 125)
+        self.assertEqual(metrics.token_source, "api")
+
+    def test_missing_api_usage_falls_back_to_local_estimate(self) -> None:
+        model, _base_model, metrics, _clock = self.build_model(
+            [[TextDelta("estimated output")]]
+        )
+
+        list(
+            model.stream(
+                [{"role": "user", "content": "estimate this request"}],
+                [{"type": "function", "function": {"name": "demo"}}],
+            )
+        )
+
+        self.assertGreater(metrics.input_tokens, 0)
+        self.assertGreater(metrics.output_tokens, 0)
+        self.assertEqual(metrics.token_source, "estimated")
+
     def test_error_after_first_event_is_not_retried(self) -> None:
         model, base_model, metrics, clock = self.build_model(
             [
@@ -168,6 +195,10 @@ class RetryingChatModelTests(unittest.TestCase):
                 self.assertIn("model_request_succeeded", content)
                 self.assertNotIn("secret-user-message", content)
                 self.assertNotIn("secret-model-answer", content)
+                self.assertRegex(
+                    content,
+                    r"(?m)^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\+0800 INFO ",
+                )
             finally:
                 for handler in list(logger.handlers):
                     handler.close()

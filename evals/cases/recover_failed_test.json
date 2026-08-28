@@ -1,0 +1,21 @@
+{
+  "id": "recover_failed_test",
+  "prompt": "先运行测试确认当前失败，再修复 math_utils.py 中的 is_even，最后重新运行测试并说明结果。不要修改测试。",
+  "fixture": "../fixtures/recover_failed_test",
+  "grader_fixture": "../grader_fixtures/recover_failed_test",
+  "approval_policy": "allow",
+  "expected": {
+    "statuses": ["completed"],
+    "required_files_changed": ["math_utils.py"],
+    "allowed_files_changed": ["math_utils.py"],
+    "commands": [
+      {"argv": ["{python}", "-m", "unittest", "discover", "-s", "tests", "-q"], "timeout_seconds": 30},
+      {"argv": ["{python}", "-m", "unittest", "discover", "-s", "hidden_tests", "-q"], "timeout_seconds": 30}
+    ],
+    "required_tools": ["run_command"],
+    "required_command_exit_sequence": [1, 0],
+    "answer_required_substrings": ["测试"],
+    "allow_side_effects": true
+  },
+  "limits": {"max_tool_calls": 18, "max_identical_tool_calls": 4}
+}

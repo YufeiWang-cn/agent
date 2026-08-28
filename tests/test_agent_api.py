@@ -192,7 +192,11 @@ class AgentApiTests(unittest.TestCase):
         ]
         model = CallbackModel(requests)
         agent = Agent(
-            replace(self.settings, max_agent_steps=5),
+            replace(
+                self.settings,
+                max_agent_steps=5,
+                max_finalization_steps=0,
+            ),
             model=model,
             session_store=self.store,
         )
@@ -205,6 +209,44 @@ class AgentApiTests(unittest.TestCase):
         self.assertEqual(outcome.tool_calls_completed, 5)
         self.assertIn("最大执行步数", outcome.final_text)
         self.assertIs(agent.last_turn_outcome, outcome)
+
+    def test_finalization_does_not_execute_regular_tools(self) -> None:
+        requests = [
+            [
+                ToolCallRequest(
+                    id="regular_1",
+                    name="calculator",
+                    arguments='{"expression":"2 + 3"}',
+                )
+            ],
+            [
+                ToolCallRequest(
+                    id="forbidden_finalization",
+                    name="calculator",
+                    arguments='{"expression":"4 + 5"}',
+                )
+            ],
+        ]
+        model = CallbackModel(requests)
+        agent = Agent(
+            replace(
+                self.settings,
+                max_agent_steps=1,
+                max_finalization_steps=1,
+            ),
+            model=model,
+            session_store=self.store,
+        )
+
+        outcome = agent.chat("持续调用普通工具")
+
+        self.assertEqual(outcome.status, RunStatus.STEP_LIMIT_REACHED)
+        self.assertEqual(outcome.steps_completed, 2)
+        self.assertEqual(outcome.tool_calls_completed, 1)
+        self.assertEqual(
+            [record.call_id for record in outcome.tool_records],
+            ["regular_1"],
+        )
 
     def test_tool_result_is_recorded_before_callback_failure(self) -> None:
         request = ToolCallRequest(

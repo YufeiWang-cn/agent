@@ -1,0 +1,25 @@
+{
+  "id": "fix_divide_by_zero",
+  "prompt": "修复 calculator.py：除数为 0 时应抛出消息为 divisor must not be zero 的 ValueError。不要修改测试，并在完成后运行测试。",
+  "fixture": "../fixtures/divide_by_zero",
+  "approval_policy": "allow",
+  "expected": {
+    "statuses": ["completed"],
+    "required_files_changed": ["calculator.py"],
+    "allowed_files_changed": ["calculator.py"],
+    "commands": [
+      {
+        "argv": ["{python}", "-m", "unittest", "discover", "-s", "tests", "-q"],
+        "expected_exit_code": 0,
+        "timeout_seconds": 30
+      }
+    ],
+    "required_tools": ["run_command"],
+    "answer_required_substrings": ["测试"],
+    "allow_side_effects": true
+  },
+  "limits": {
+    "max_tool_calls": 15,
+    "max_identical_tool_calls": 3
+  }
+}

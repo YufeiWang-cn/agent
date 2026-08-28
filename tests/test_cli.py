@@ -95,6 +95,9 @@ class CliApplicationTests(unittest.TestCase):
             failed_requests=1,
             retries=1,
             total_duration_seconds=4.0,
+            input_tokens=120,
+            output_tokens=30,
+            usage_api_reports=1,
         )
         _agent, application = self.build_application(metrics=metrics)
         output = io.StringIO()
@@ -106,6 +109,9 @@ class CliApplicationTests(unittest.TestCase):
         self.assertIn("模型请求数：2", output.getvalue())
         self.assertIn("API 尝试次数：3", output.getvalue())
         self.assertIn("自动重试次数：1", output.getvalue())
+        self.assertIn("输入 Token：120", output.getvalue())
+        self.assertIn("输出 Token：30", output.getvalue())
+        self.assertIn("Token 来源：api", output.getvalue())
         self.assertIn("平均请求耗时：2.000 秒", output.getvalue())
 
     def test_regular_text_is_not_treated_as_command(self) -> None:
