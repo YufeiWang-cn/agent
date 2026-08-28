@@ -17,6 +17,7 @@ from ..config import PROJECT_ROOT, Settings
 from ..journal import RunJournal
 from ..memory import JsonProjectStore, JsonSessionStore
 from ..timekeeping import now_china
+from ..tools import ToolExecutionError, build_command_executor
 from .models import EvalCase, EvalCaseError, EvalResult, load_cases
 from .runner import AgentFactory, EvalRunner, EvalToolConfirmer
 
@@ -30,7 +31,10 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         type=Path,
         default=PROJECT_ROOT / "evals" / "cases",
-        help="单个 JSON 案例或案例目录。",
+        help=(
+            "单个 JSON 案例或案例目录；省略时使用项目自带的 evals/cases，"
+            "运行自定义评测时请传入自己的路径。"
+        ),
     )
     parser.add_argument(
         "--output",
@@ -51,12 +55,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--input-price-per-million",
         type=float,
-        help="每百万输入 Token 的价格；需与输出价格同时提供。",
+        help=(
+            "每百万输入 Token 的当前供应商价格；由用户填写，"
+            "并需与输出价格同时提供。"
+        ),
     )
     parser.add_argument(
         "--output-price-per-million",
         type=float,
-        help="每百万输出 Token 的价格；需与输入价格同时提供。",
+        help=(
+            "每百万输出 Token 的当前供应商价格；由用户填写，"
+            "并需与输入价格同时提供。"
+        ),
+    )
+    parser.add_argument(
+        "--allow-unsafe-local-commands",
+        action="store_true",
+        help=(
+            "显式允许评测命令以当前用户权限在宿主机运行；"
+            "仅限可信案例，默认要求 Docker 隔离。"
+        ),
     )
     return parser
 
@@ -115,6 +133,7 @@ def _report_payload(
     return {
         "generated_at": now_china().isoformat(),
         "model": settings.model,
+        "command_execution_mode": settings.command_execution_mode,
         "summary": {
             "total": len(results),
             "passed": passed,
@@ -247,6 +266,23 @@ def run(arguments: list[str] | None = None) -> int:
         print(f"评测配置错误：{error}", file=sys.stderr)
         return 2
 
+    execution_mode = "local" if options.allow_unsafe_local_commands else "docker"
+    settings = replace(settings, command_execution_mode=execution_mode)
+    command_executor = build_command_executor(
+        settings.command_execution_mode,
+        settings.command_container_image,
+    )
+    try:
+        command_executor.preflight()
+    except (ToolExecutionError, ValueError) as error:
+        print(f"评测隔离不可用：{error}", file=sys.stderr)
+        return 2
+    if execution_mode == "local":
+        print(
+            "警告：本轮评测使用不受 OS 沙箱保护的本地命令模式。",
+            file=sys.stderr,
+        )
+
     output = (options.output or _default_output_path()).resolve()
     failed_directory = (
         output.parent / f"{output.stem}-workspaces"
@@ -256,6 +292,7 @@ def run(arguments: list[str] | None = None) -> int:
     runner = EvalRunner(
         _agent_factory(settings),
         failed_workspace_directory=failed_directory,
+        command_executor=command_executor,
     )
     results = runner.run_cases(cases, repeat=options.repeat)
     output.parent.mkdir(parents=True, exist_ok=True)

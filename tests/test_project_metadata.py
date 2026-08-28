@@ -54,6 +54,18 @@ class ProjectMetadataTests(unittest.TestCase):
             "# AGENT_WORKSPACE=C:/path/to/your/workspace",
             env_example,
         )
+        self.assertIn("必填", env_example)
+        self.assertIn("替换为自己的真实 DeepSeek API Key", env_example)
+
+    def test_user_facing_setup_files_do_not_contain_machine_specific_paths(self) -> None:
+        machine_specific_path = re.compile(
+            r"(?i)(?:[A-Z]:[\\/](?:Users|Anaconda3|Miniconda3)[\\/]"
+            r"|/(?:home|Users)/[^/\s]+/)"
+        )
+        for relative_path in ("README.md", ".env.example"):
+            with self.subTest(path=relative_path):
+                content = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertNotRegex(content, machine_specific_path)
 
     def test_system_prompt_keeps_tests_independent_from_implementation(self) -> None:
         prompt = (

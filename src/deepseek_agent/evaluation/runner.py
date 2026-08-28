@@ -12,7 +12,7 @@ from uuid import uuid4
 from ..agent import Agent
 from ..runtime import AgentEvent, AgentEventType, TurnOutcome
 from ..tool_execution import ToolExecutionRecord
-from ..tools import Tool
+from ..tools import CommandExecutor, Tool
 from .graders import (
     AnswerGrader,
     CommandGrader,
@@ -45,11 +45,12 @@ class EvalRunner:
         agent_factory: AgentFactory,
         *,
         failed_workspace_directory: Path | None = None,
+        command_executor: CommandExecutor | None = None,
     ) -> None:
         self._agent_factory = agent_factory
         self._failed_workspace_directory = failed_workspace_directory
         self._file_grader = FileChangeGrader()
-        self._command_grader = CommandGrader()
+        self._command_grader = CommandGrader(command_executor)
         self._trace_grader = TraceGrader()
         self._safety_grader = SafetyGrader()
         self._answer_grader = AnswerGrader()

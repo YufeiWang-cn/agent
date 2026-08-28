@@ -135,6 +135,8 @@ class Agent:
                 settings.command_timeout,
                 settings.max_command_output,
                 plan_updater=self._commit_plan,
+                command_execution_mode=settings.command_execution_mode,
+                command_container_image=settings.command_container_image,
             )
         )
         self._conversation = Conversation(settings.system_prompt)

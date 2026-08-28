@@ -24,6 +24,8 @@ class SettingsTests(unittest.TestCase):
                 "AGENT_MAX_STEPS": "7",
                 "AGENT_MAX_FINALIZATION_STEPS": "3",
                 "AGENT_COMMAND_TIMEOUT": "2.5",
+                "AGENT_COMMAND_EXECUTION_MODE": "docker",
+                "AGENT_COMMAND_CONTAINER_IMAGE": "example/python:test",
             }
             with patch.dict(os.environ, environment, clear=True):
                 with patch("deepseek_agent.config.load_dotenv"):
@@ -32,6 +34,8 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.max_agent_steps, 7)
         self.assertEqual(settings.max_finalization_steps, 3)
         self.assertEqual(settings.command_timeout, 2.5)
+        self.assertEqual(settings.command_execution_mode, "docker")
+        self.assertEqual(settings.command_container_image, "example/python:test")
         self.assertEqual(settings.workspace_root, Path(temporary_directory).resolve())
 
     def test_from_env_rejects_invalid_integer(self) -> None:
@@ -44,6 +48,13 @@ class SettingsTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "AGENT_MAX_STEPS"):
                     Settings.from_env()
 
+    def test_from_env_rejects_example_api_key_placeholder(self) -> None:
+        environment = {"DEEPSEEK_API_KEY": "replace_with_your_api_key"}
+        with patch.dict(os.environ, environment, clear=True):
+            with patch("deepseek_agent.config.load_dotenv"):
+                with self.assertRaisesRegex(RuntimeError, "占位值"):
+                    Settings.from_env()
+
     def test_from_env_rejects_negative_finalization_steps(self) -> None:
         environment = {
             "DEEPSEEK_API_KEY": "test-key",
@@ -54,6 +65,19 @@ class SettingsTests(unittest.TestCase):
                 with self.assertRaisesRegex(
                     RuntimeError,
                     "AGENT_MAX_FINALIZATION_STEPS",
+                ):
+                    Settings.from_env()
+
+    def test_from_env_rejects_unknown_command_execution_mode(self) -> None:
+        environment = {
+            "DEEPSEEK_API_KEY": "test-key",
+            "AGENT_COMMAND_EXECUTION_MODE": "automatic",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            with patch("deepseek_agent.config.load_dotenv"):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "AGENT_COMMAND_EXECUTION_MODE",
                 ):
                     Settings.from_env()
 

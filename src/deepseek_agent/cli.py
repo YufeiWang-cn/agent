@@ -230,7 +230,8 @@ class CliApplication:
             "  /plan         查看当前任务计划\n"
             "  /model        查看当前模型\n"
             "  /tools        查看可用工具\n"
-            "  /exit         退出程序"
+            "  /exit         退出程序\n"
+            "提示：<ID> 是占位符，请替换为 /sessions 显示的实际会话 ID。"
         )
 
     @staticmethod

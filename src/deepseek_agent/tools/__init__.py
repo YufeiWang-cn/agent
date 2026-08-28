@@ -14,6 +14,12 @@ from .base import (
     ToolNotFoundError,
 )
 from .calculator import CalculatorTool
+from .command_executor import (
+    CommandExecutor,
+    DockerCommandExecutor,
+    LocalCommandExecutor,
+    build_command_executor,
+)
 from .datetime_tool import DateTimeTool
 from .list_directory import ListDirectoryTool
 from .read_text_file import ReadTextFileTool
@@ -31,6 +37,8 @@ def build_default_registry(
     command_timeout: float = 120.0,
     max_command_output: int = 50_000,
     plan_updater: PlanUpdater | None = None,
+    command_execution_mode: str = "local",
+    command_container_image: str = "python:3.10-slim",
 ) -> ToolRegistry:
     """使用同一个工作区守卫构建默认工具注册表。"""
     guard = WorkspaceGuard(workspace_root or Path.cwd(), max_file_size)
@@ -44,6 +52,10 @@ def build_default_registry(
             guard,
             timeout_seconds=command_timeout,
             max_output_bytes=max_command_output,
+            command_executor=build_command_executor(
+                command_execution_mode,
+                command_container_image,
+            ),
         ),
         ApplyPatchTool(guard),
         ReplaceTextTool(guard),
@@ -58,8 +70,11 @@ def build_default_registry(
 __all__ = [
     "ApplyPatchTool",
     "CalculatorTool",
+    "CommandExecutor",
     "DateTimeTool",
+    "DockerCommandExecutor",
     "ListDirectoryTool",
+    "LocalCommandExecutor",
     "ReadTextFileTool",
     "ReplaceTextTool",
     "SearchTextTool",
@@ -75,4 +90,5 @@ __all__ = [
     "UpdatePlanTool",
     "WriteTextFileTool",
     "build_default_registry",
+    "build_command_executor",
 ]

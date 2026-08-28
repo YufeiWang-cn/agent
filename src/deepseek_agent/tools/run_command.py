@@ -22,6 +22,7 @@ from .command_policy import (
     CommandPolicyResolver,
     MAX_COMMAND_ARGUMENTS,
 )
+from .command_executor import CommandExecutor, LocalCommandExecutor
 
 
 POLL_INTERVAL_SECONDS = 0.1
@@ -64,6 +65,7 @@ class RunCommandTool(Tool):
         *,
         timeout_seconds: float = 120.0,
         max_output_bytes: int = 50_000,
+        command_executor: CommandExecutor | None = None,
     ) -> None:
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds 必须大于 0")
@@ -73,6 +75,7 @@ class RunCommandTool(Tool):
         self.timeout_seconds: float = timeout_seconds
         self._max_output_bytes = max_output_bytes
         self._policy_resolver = CommandPolicyResolver()
+        self._command_executor = command_executor or LocalCommandExecutor()
 
     def requires_confirmation_for(self, arguments: JsonObject) -> bool:
         # ToolExecutor 会在执行前调用本方法。
@@ -98,6 +101,13 @@ class RunCommandTool(Tool):
         self._validate_git_repository(policy, cwd)
         started_at = time.monotonic()
         environment = self._safe_environment()
+        prepared = self._command_executor.prepare(
+            policy.argv,
+            effect=policy.effect,
+            workspace=self._guard.root,
+            cwd=cwd,
+            environment=environment,
+        )
 
         with (
             tempfile.TemporaryFile() as stdout_file,
@@ -107,44 +117,52 @@ class RunCommandTool(Tool):
             # max_output_bytes 只限制最终返回量，持续输出的进程仍由超时机制终止。
             try:
                 process = subprocess.Popen(
-                    list(policy.argv),
-                    cwd=cwd,
+                    list(prepared.argv),
+                    cwd=prepared.cwd,
                     stdin=subprocess.DEVNULL,
                     stdout=stdout_file,
                     stderr=stderr_file,
-                    env=environment,
+                    env=prepared.environment,
                     # 安全边界：参数不会交给 cmd、PowerShell 或 Bash 二次解析。
                     shell=False,
                     start_new_session=os.name != "nt",
                     creationflags=self._creation_flags(),
                 )
             except (OSError, ValueError) as error:
+                self._command_executor.cleanup(prepared)
                 raise ToolExecutionError(f"无法启动命令：{error}") from error
 
-            local_deadline = started_at + self.timeout_seconds
-            while process.poll() is None:
-                if context.cancellation_requested:
-                    self._terminate_process(process)
-                    # 写入类命令被中断时，系统无法断定它是否已经生效。
-                    # 上层必须按照 RESULT_UNKNOWN 状态和副作用保留规则处理。
-                    raise ToolExecutionError(
-                        "命令执行已取消。",
-                        side_effect_possible=policy.effect is not ToolEffect.READ_ONLY,
-                    )
-                if context.timed_out or time.monotonic() >= local_deadline:
-                    self._terminate_process(process)
-                    raise ToolExecutionError(
-                        f"命令执行超过 {self.timeout_seconds:g} 秒，已终止。",
-                        side_effect_possible=policy.effect is not ToolEffect.READ_ONLY,
-                    )
-                time.sleep(POLL_INTERVAL_SECONDS)
+            try:
+                local_deadline = started_at + self.timeout_seconds
+                while process.poll() is None:
+                    if context.cancellation_requested:
+                        self._terminate_process(process)
+                        # 写入类命令被中断时，系统无法断定它是否已经生效。
+                        # 上层必须按照 RESULT_UNKNOWN 状态和副作用保留规则处理。
+                        raise ToolExecutionError(
+                            "命令执行已取消。",
+                            side_effect_possible=(
+                                policy.effect is not ToolEffect.READ_ONLY
+                            ),
+                        )
+                    if context.timed_out or time.monotonic() >= local_deadline:
+                        self._terminate_process(process)
+                        raise ToolExecutionError(
+                            f"命令执行超过 {self.timeout_seconds:g} 秒，已终止。",
+                            side_effect_possible=(
+                                policy.effect is not ToolEffect.READ_ONLY
+                            ),
+                        )
+                    time.sleep(POLL_INTERVAL_SECONDS)
 
-            stdout, stdout_truncated = self._read_output(
-                cast(BinaryIO, stdout_file)
-            )
-            stderr, stderr_truncated = self._read_output(
-                cast(BinaryIO, stderr_file)
-            )
+                stdout, stdout_truncated = self._read_output(
+                    cast(BinaryIO, stdout_file)
+                )
+                stderr, stderr_truncated = self._read_output(
+                    cast(BinaryIO, stderr_file)
+                )
+            finally:
+                self._command_executor.cleanup(prepared)
 
         # Popen 正常结束不代表业务命令执行成功。
         # 调用模型必须检查 exit_code。
@@ -158,6 +176,7 @@ class RunCommandTool(Tool):
                 "stdout_truncated": stdout_truncated,
                 "stderr_truncated": stderr_truncated,
                 "duration_seconds": round(time.monotonic() - started_at, 3),
+                "execution_mode": self._command_executor.mode,
             },
             ensure_ascii=False,
         )

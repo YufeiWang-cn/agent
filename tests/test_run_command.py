@@ -1,7 +1,9 @@
 """验证受控命令工具的白名单、确认、工作区和资源限制。"""
 
 import json
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -14,6 +16,7 @@ add_src_to_path()
 from deepseek_agent.models import ToolCallRequest
 from deepseek_agent.tool_execution import ToolExecutionStatus, ToolExecutor
 from deepseek_agent.tools import (
+    DockerCommandExecutor,
     RunCommandTool,
     ToolEffect,
     ToolExecutionContext,
@@ -63,6 +66,7 @@ class RunCommandToolTests(unittest.TestCase):
         self.assertIn("Python", result["stdout"] + result["stderr"])
         self.assertFalse(result["stdout_truncated"])
         self.assertFalse(result["stderr_truncated"])
+        self.assertEqual(result["execution_mode"], "local")
 
     def test_dynamic_policy_only_auto_allows_information_commands(self) -> None:
         git_status = {"command": ["git", "status", "--short"]}
@@ -177,6 +181,166 @@ class RunCommandToolTests(unittest.TestCase):
                 ToolExecutionContext(should_cancel=lambda: True),
             )
         self.assertTrue(cancelled.exception.side_effect_possible)
+
+    def test_docker_mode_fails_closed_when_backend_is_missing(self) -> None:
+        executor = DockerCommandExecutor("python:3.10-slim")
+
+        with patch(
+            "deepseek_agent.tools.command_executor.shutil.which",
+            return_value=None,
+        ):
+            with self.assertRaisesRegex(ToolExecutionError, "Docker"):
+                executor.preflight()
+
+    def test_docker_command_mounts_only_workspace_with_hardening_flags(self) -> None:
+        (self.workspace / ".env").write_text("SECRET=value", encoding="utf-8")
+        (self.workspace / "source.py").write_text("value = 1", encoding="utf-8")
+        internal_state = self.workspace / "data" / "sessions"
+        internal_state.mkdir(parents=True)
+        (internal_state / "session.json").write_text("{}", encoding="utf-8")
+        executor = DockerCommandExecutor("python:3.10-slim")
+        completed = subprocess.CompletedProcess([], 0)
+        with (
+            patch(
+                "deepseek_agent.tools.command_executor.shutil.which",
+                return_value="docker",
+            ),
+            patch(
+                "deepseek_agent.tools.command_executor.subprocess.run",
+                return_value=completed,
+            ),
+        ):
+            prepared = executor.prepare(
+                (sys.executable, "escape.py"),
+                effect=ToolEffect.EXTERNAL_SIDE_EFFECT,
+                workspace=self.workspace,
+                cwd=self.workspace,
+                environment={"PATH": "safe"},
+            )
+
+        command = list(prepared.argv)
+        self.assertIn("--network", command)
+        self.assertIn("none", command)
+        self.assertIn("--read-only", command)
+        self.assertIn("no-new-privileges:true", command)
+        joined = " ".join(command)
+        self.assertIn("type=bind,source=", joined)
+        self.assertNotIn(str(self.workspace), joined)
+        self.assertEqual(command[-2:], ["python:3.10-slim", "escape.py"])
+        self.assertIsNotNone(prepared.container_name)
+        self.assertIsNotNone(prepared.staging_directory)
+        self.assertFalse((prepared.cwd / ".env").exists())
+        self.assertFalse((prepared.cwd / ".git").exists())
+        self.assertFalse((prepared.cwd / "data" / "sessions").exists())
+        self.assertTrue((prepared.cwd / "source.py").is_file())
+        (prepared.cwd / "source.py").write_text("value = 2", encoding="utf-8")
+        self.assertEqual(
+            (self.workspace / "source.py").read_text(encoding="utf-8"),
+            "value = 1",
+        )
+        with patch(
+            "deepseek_agent.tools.command_executor.subprocess.run",
+            return_value=completed,
+        ):
+            executor.cleanup(prepared)
+        self.assertFalse((prepared.staging_directory or Path()).exists())
+
+    def test_docker_mode_rejects_git_instead_of_running_it_on_host(self) -> None:
+        executor = DockerCommandExecutor("python:3.10-slim")
+        completed = subprocess.CompletedProcess([], 0)
+        with (
+            patch(
+                "deepseek_agent.tools.command_executor.shutil.which",
+                return_value="docker",
+            ),
+            patch(
+                "deepseek_agent.tools.command_executor.subprocess.run",
+                return_value=completed,
+            ),
+        ):
+            with self.assertRaisesRegex(ToolExecutionError, "Git"):
+                executor.prepare(
+                    ("git", "status", "--short"),
+                    effect=ToolEffect.READ_ONLY,
+                    workspace=self.workspace,
+                    cwd=self.workspace,
+                    environment={"PATH": "safe"},
+                )
+
+    def test_docker_cleanup_fails_when_container_is_still_running(self) -> None:
+        executor = DockerCommandExecutor("python:3.10-slim")
+        completed = subprocess.CompletedProcess([], 0)
+        with (
+            patch(
+                "deepseek_agent.tools.command_executor.shutil.which",
+                return_value="docker",
+            ),
+            patch(
+                "deepseek_agent.tools.command_executor.subprocess.run",
+                return_value=completed,
+            ),
+        ):
+            prepared = executor.prepare(
+                (sys.executable, "escape.py"),
+                effect=ToolEffect.EXTERNAL_SIDE_EFFECT,
+                workspace=self.workspace,
+                cwd=self.workspace,
+                environment={"PATH": "safe"},
+            )
+
+        with patch(
+            "deepseek_agent.tools.command_executor.subprocess.run",
+            side_effect=(
+                subprocess.CompletedProcess([], 1),
+                subprocess.CompletedProcess([], 0, stdout=b"container-id\n"),
+            ),
+        ):
+            with self.assertRaises(ToolExecutionError) as raised:
+                executor.cleanup(prepared)
+        self.assertTrue(raised.exception.side_effect_possible)
+        self.assertTrue((prepared.staging_directory or Path()).exists())
+
+        with patch(
+            "deepseek_agent.tools.command_executor.subprocess.run",
+            return_value=completed,
+        ):
+            executor.cleanup(prepared)
+        self.assertFalse((prepared.staging_directory or Path()).exists())
+
+    @unittest.skipUnless(shutil.which("docker"), "需要 Docker 运行真实隔离测试")
+    def test_docker_blocks_python_from_writing_to_workspace_sibling(self) -> None:
+        outside = Path(self.temporary_directory.name) / "outside"
+        outside.mkdir()
+        sentinel = outside / "sentinel.txt"
+        sentinel.write_text("unchanged", encoding="utf-8")
+        script = self.workspace / "escape.py"
+        script.write_text(
+            "from pathlib import Path\n"
+            "try:\n"
+            "    Path('../outside/sentinel.txt').write_text('changed')\n"
+            "except OSError:\n"
+            "    print('blocked')\n"
+            "else:\n"
+            "    print('escaped')\n",
+            encoding="utf-8",
+        )
+        executor = DockerCommandExecutor("python:3.10-slim")
+        try:
+            executor.preflight()
+        except ToolExecutionError as error:
+            self.skipTest(str(error))
+        tool = RunCommandTool(
+            WorkspaceGuard(self.workspace, 10_000),
+            timeout_seconds=30,
+            command_executor=executor,
+        )
+
+        result = json.loads(tool.execute({"command": ["python", "escape.py"]}))
+
+        self.assertEqual(result["exit_code"], 0)
+        self.assertIn("blocked", result["stdout"])
+        self.assertNotIn("escaped", result["stdout"])
+        self.assertEqual(sentinel.read_text(encoding="utf-8"), "unchanged")
 
 
 if __name__ == "__main__":

@@ -6,7 +6,6 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "system.md"
 DEFAULT_MAX_CONTEXT_TOKENS = 8_000
@@ -19,6 +18,10 @@ DEFAULT_COMMAND_TIMEOUT = 120.0
 DEFAULT_MAX_COMMAND_OUTPUT = 50_000
 DEFAULT_MAX_AGENT_STEPS = 12
 DEFAULT_MAX_FINALIZATION_STEPS = 2
+DEFAULT_COMMAND_EXECUTION_MODE = "local"
+DEFAULT_COMMAND_CONTAINER_IMAGE = "python:3.10-slim"
+SUPPORTED_COMMAND_EXECUTION_MODES = frozenset({"docker", "local"})
+API_KEY_PLACEHOLDERS = frozenset({"replace_with_your_api_key"})
 
 
 def _read_int_env(
@@ -65,6 +68,18 @@ def _read_log_level() -> str:
     return value
 
 
+def _read_command_execution_mode() -> str:
+    """读取命令执行模式，并拒绝无法识别的隐式降级值。"""
+    value = os.getenv(
+        "AGENT_COMMAND_EXECUTION_MODE",
+        DEFAULT_COMMAND_EXECUTION_MODE,
+    ).strip().lower()
+    if value not in SUPPORTED_COMMAND_EXECUTION_MODES:
+        choices = "、".join(sorted(SUPPORTED_COMMAND_EXECUTION_MODES))
+        raise RuntimeError(f"AGENT_COMMAND_EXECUTION_MODE 只能是：{choices}。")
+    return value
+
+
 def _resolve_workspace_root() -> Path:
     """解析工作区真实路径，确保后续安全检查使用稳定目录。"""
     workspace_root = Path(
@@ -97,6 +112,8 @@ class Settings:
     max_command_output: int = DEFAULT_MAX_COMMAND_OUTPUT
     max_agent_steps: int = DEFAULT_MAX_AGENT_STEPS
     max_finalization_steps: int = DEFAULT_MAX_FINALIZATION_STEPS
+    command_execution_mode: str = DEFAULT_COMMAND_EXECUTION_MODE
+    command_container_image: str = DEFAULT_COMMAND_CONTAINER_IMAGE
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -104,8 +121,11 @@ class Settings:
         load_dotenv(PROJECT_ROOT / ".env")
 
         api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
-        if not api_key:
-            raise RuntimeError("请先在 .env 中设置 DEEPSEEK_API_KEY。")
+        if not api_key or api_key.lower() in API_KEY_PLACEHOLDERS:
+            raise RuntimeError(
+                "请复制 .env.example 为 .env，并将 DEEPSEEK_API_KEY 的占位值"
+                "替换为自己的真实 API Key。"
+            )
 
         max_context_tokens = _read_int_env(
             "DEEPSEEK_MAX_CONTEXT_TOKENS",
@@ -164,6 +184,12 @@ class Settings:
             minimum=0,
             error_message="AGENT_MAX_FINALIZATION_STEPS 不能小于 0。",
         )
+        command_container_image = os.getenv(
+            "AGENT_COMMAND_CONTAINER_IMAGE",
+            DEFAULT_COMMAND_CONTAINER_IMAGE,
+        ).strip()
+        if not command_container_image:
+            raise RuntimeError("AGENT_COMMAND_CONTAINER_IMAGE 不能为空。")
 
         return cls(
             api_key=api_key,
@@ -183,4 +209,6 @@ class Settings:
             max_command_output=max_command_output,
             max_agent_steps=max_agent_steps,
             max_finalization_steps=max_finalization_steps,
+            command_execution_mode=_read_command_execution_mode(),
+            command_container_image=command_container_image,
         )

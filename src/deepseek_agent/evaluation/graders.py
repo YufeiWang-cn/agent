@@ -12,7 +12,7 @@ from typing import Any
 
 from ..runtime import TurnOutcome
 from ..tool_execution import ToolExecutionRecord, ToolExecutionStatus
-from ..tools import ToolEffect
+from ..tools import CommandExecutor, LocalCommandExecutor, ToolEffect, ToolExecutionError
 from .models import CheckResult, EvalCase
 from .snapshot import changed_paths
 
@@ -59,6 +59,9 @@ class FileChangeGrader:
 class CommandGrader:
     """在隔离工作区内无 Shell 执行验收命令。"""
 
+    def __init__(self, command_executor: CommandExecutor | None = None) -> None:
+        self._command_executor = command_executor or LocalCommandExecutor()
+
     def grade(
         self,
         workspace: Path,
@@ -79,17 +82,26 @@ class CommandGrader:
                 sys.executable if argument == "{python}" else argument
                 for argument in command.argv
             ]
+            prepared = None
+            cleanup_error: str | None = None
             try:
-                completed = subprocess.run(
-                    argv,
+                prepared = self._command_executor.prepare(
+                    tuple(argv),
+                    effect=ToolEffect.EXTERNAL_SIDE_EFFECT,
+                    workspace=workspace,
                     cwd=workspace,
+                    environment=self._safe_environment(),
+                )
+                completed = subprocess.run(
+                    prepared.argv,
+                    cwd=prepared.cwd,
                     stdin=subprocess.DEVNULL,
                     capture_output=True,
                     text=True,
                     timeout=command.timeout_seconds,
                     check=False,
                     shell=False,
-                    env=self._safe_environment(),
+                    env=prepared.environment,
                     creationflags=self._creation_flags(),
                 )
                 passed = completed.returncode == command.expected_exit_code
@@ -110,9 +122,19 @@ class CommandGrader:
                     "stdout": self._captured_text(error.stdout),
                     "stderr": self._captured_text(error.stderr),
                 }
-            except OSError as error:
+            except (OSError, ToolExecutionError, ValueError) as error:
                 passed = False
                 result = {"argv": argv, "passed": False, "error": str(error)}
+            finally:
+                if prepared is not None:
+                    try:
+                        self._command_executor.cleanup(prepared)
+                    except ToolExecutionError as error:
+                        cleanup_error = str(error)
+            if cleanup_error is not None:
+                passed = False
+                result["passed"] = False
+                result["cleanup_error"] = cleanup_error
             all_passed = all_passed and passed
             results.append(result)
         return CheckResult(

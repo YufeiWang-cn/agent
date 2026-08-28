@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from _path_setup import add_src_to_path
 
@@ -33,7 +33,7 @@ from deepseek_agent.memory import JsonProjectStore, JsonSessionStore
 from deepseek_agent.models import StreamEvent, TextDelta, ToolCallRequest
 from deepseek_agent.runtime import RunStatus, TurnOutcome
 from deepseek_agent.tool_execution import ToolExecutionRecord, ToolExecutionStatus
-from deepseek_agent.tools import ToolEffect
+from deepseek_agent.tools import ToolEffect, ToolExecutionError
 
 
 class ScriptedModel:
@@ -277,12 +277,20 @@ class EvaluationTests(unittest.TestCase):
             patch.object(EvalRunner, "run_cases", return_value=(passed_result,)),
             redirect_stdout(StringIO()),
         ):
-            exit_code = run([str(case_path), "--output", str(report_path)])
+            exit_code = run(
+                [
+                    str(case_path),
+                    "--output",
+                    str(report_path),
+                    "--allow-unsafe-local-commands",
+                ]
+            )
 
         self.assertEqual(exit_code, 0)
         report = json.loads(report_path.read_text(encoding="utf-8"))
         self.assertEqual(report["summary"]["passed"], 1)
         self.assertEqual(report["model"], "eval-model")
+        self.assertEqual(report["command_execution_mode"], "local")
         self.assertTrue(report["generated_at"].endswith("+08:00"))
 
         failed_result = EvalResult(
@@ -305,6 +313,7 @@ class EvaluationTests(unittest.TestCase):
                     "--output",
                     str(report_path),
                     "--keep-failed-workspaces",
+                    "--allow-unsafe-local-commands",
                 ]
             )
         self.assertEqual(exit_code, 1)
@@ -348,6 +357,7 @@ class EvaluationTests(unittest.TestCase):
                 [
                     str(case_path), "--output", str(report_path), "--repeat", "2",
                     "--input-price-per-million", "1", "--output-price-per-million", "2",
+                    "--allow-unsafe-local-commands",
                 ]
             )
 
@@ -361,6 +371,35 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(report["summary"]["safety_rate"], 1.0)
         self.assertEqual(report["summary"]["total_tokens"], 360)
         self.assertEqual(report["summary"]["estimated_cost"], 0.00042)
+
+    def test_eval_cli_fails_closed_when_default_isolation_is_unavailable(self) -> None:
+        case_path = self.root / "case.json"
+        case_path.write_text(
+            json.dumps({"id": "sample", "prompt": "test", "fixture": "fixture"}),
+            encoding="utf-8",
+        )
+        settings = Settings(
+            api_key="test",
+            base_url="https://example.invalid",
+            model="eval-model",
+            system_prompt="system",
+        )
+        executor = Mock()
+        executor.preflight.side_effect = ToolExecutionError("Docker unavailable")
+        error_output = StringIO()
+        with (
+            patch("deepseek_agent.evaluation.cli.Settings.from_env", return_value=settings),
+            patch(
+                "deepseek_agent.evaluation.cli.build_command_executor",
+                return_value=executor,
+            ) as build_executor,
+            redirect_stderr(error_output),
+        ):
+            exit_code = run([str(case_path)])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("评测隔离不可用", error_output.getvalue())
+        build_executor.assert_called_once_with("docker", "python:3.10-slim")
 
     def test_eval_cli_reports_invalid_case_path(self) -> None:
         error_output = StringIO()
