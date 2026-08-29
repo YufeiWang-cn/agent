@@ -53,8 +53,17 @@ class ToolConfirmationDialog:
         self._fullscreen = False
         self._window = tk.Toplevel(parent)
         self._window.title("确认工具调用")
-        self._window.geometry("720x540")
-        self._window.minsize(600, 440)
+        dialog_width, dialog_height = self._preferred_size(
+            parent_width=parent.winfo_width(),
+            parent_height=parent.winfo_height(),
+            screen_width=self._window.winfo_screenwidth(),
+            screen_height=self._window.winfo_screenheight(),
+        )
+        self._window.geometry(f"{dialog_width}x{dialog_height}")
+        self._window.minsize(
+            min(600, dialog_width),
+            min(440, dialog_height),
+        )
         self._window.configure(background=APP_BACKGROUND)
         self._window.transient(parent)
         self._window.grab_set()
@@ -109,12 +118,22 @@ class ToolConfirmationDialog:
             text="此操作需要您的确认",
             style="DialogTitle.TLabel",
         ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
+        self._description_label = ttk.Label(
             content,
-            text=f"{request.tool.name}  ·  {request.tool.description}",
+            text=(
+                f"{request.tool.name}  ·  "
+                f"{request.tool.confirmation_description or request.tool.description}"
+            ),
             style="Body.TLabel",
-            wraplength=660,
-        ).grid(row=1, column=0, sticky="ew", pady=(6, 14))
+            wraplength=max(320, dialog_width - 40),
+        )
+        self._description_label.grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            pady=(6, 14),
+        )
+        content.bind("<Configure>", self._resize_description)
 
         ttk.Label(content, text="调用详情", style="Section.TLabel").grid(
             row=2,
@@ -180,13 +199,17 @@ class ToolConfirmationDialog:
                 )
 
         self._window.update_idletasks()
-        x = parent.winfo_rootx() + max(
-            0, (parent.winfo_width() - self._window.winfo_width()) // 2
+        x, y = self._center_position(
+            parent_x=parent.winfo_rootx(),
+            parent_y=parent.winfo_rooty(),
+            parent_width=parent.winfo_width(),
+            parent_height=parent.winfo_height(),
+            dialog_width=dialog_width,
+            dialog_height=dialog_height,
+            screen_width=self._window.winfo_screenwidth(),
+            screen_height=self._window.winfo_screenheight(),
         )
-        y = parent.winfo_rooty() + max(
-            0, (parent.winfo_height() - self._window.winfo_height()) // 2
-        )
-        self._window.geometry(f"+{x}+{y}")
+        self._window.geometry(f"{dialog_width}x{dialog_height}+{x}+{y}")
         deny_button.focus_set()
         self._window.wait_window()
 
@@ -216,5 +239,59 @@ class ToolConfirmationDialog:
         else:
             self._deny()
         return "break"
+
+    def _resize_description(self, event: tk.Event) -> None:
+        """随内容区域宽度调整说明文字换行，避免固定像素导致拥挤。"""
+        width = int(getattr(event, "width", 0))
+        if width > 0:
+            self._description_label.configure(wraplength=max(320, width))
+
+    @staticmethod
+    def _preferred_size(
+        *,
+        parent_width: int,
+        parent_height: int,
+        screen_width: int,
+        screen_height: int,
+    ) -> tuple[int, int]:
+        """根据主窗口和屏幕尺寸计算适合当前显示器的初始大小。"""
+        usable_width = max(480, screen_width - 80)
+        usable_height = max(400, screen_height - 100)
+        width = (
+            max(720, round(parent_width * 0.82))
+            if parent_width >= 640
+            else 720
+        )
+        height = (
+            max(540, round(parent_height * 0.82))
+            if parent_height >= 480
+            else 540
+        )
+        width = min(usable_width, 1_040, width)
+        height = min(usable_height, 760, height)
+        return width, height
+
+    @staticmethod
+    def _center_position(
+        *,
+        parent_x: int,
+        parent_y: int,
+        parent_width: int,
+        parent_height: int,
+        dialog_width: int,
+        dialog_height: int,
+        screen_width: int,
+        screen_height: int,
+    ) -> tuple[int, int]:
+        """优先相对主窗口居中，主窗口不可见时退回屏幕中央。"""
+        if parent_width >= 320 and parent_height >= 240:
+            return (
+                parent_x + (parent_width - dialog_width) // 2,
+                parent_y + (parent_height - dialog_height) // 2,
+            )
+        return (
+            max(0, (screen_width - dialog_width) // 2),
+            max(0, (screen_height - dialog_height) // 2),
+        )
 
 

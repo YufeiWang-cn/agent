@@ -1,6 +1,7 @@
 """读取、校验并集中保存 Agent 的运行配置。"""
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,8 +21,26 @@ DEFAULT_MAX_AGENT_STEPS = 12
 DEFAULT_MAX_FINALIZATION_STEPS = 2
 DEFAULT_COMMAND_EXECUTION_MODE = "local"
 DEFAULT_COMMAND_CONTAINER_IMAGE = "python:3.10-slim"
+DEFAULT_WEB_SEARCH_TIMEOUT = 20.0
+DEFAULT_WEB_SEARCH_MAX_RESULTS = 5
+DEFAULT_WEB_SEARCH_AUTO_CALLS_PER_TURN = 2
+DEFAULT_WEB_SEARCH_SCOPE = "balanced"
+DEFAULT_WEB_SEARCH_DOMESTIC_RESULTS = 3
+DEFAULT_WEB_SEARCH_INTERNATIONAL_RESULTS = 3
+MAX_WEB_SEARCH_RESULTS = 10
+MAX_WEB_SEARCH_AUTO_CALLS_PER_TURN = 5
+MAX_WEB_SEARCH_DOMAINS = 50
 SUPPORTED_COMMAND_EXECUTION_MODES = frozenset({"docker", "local"})
+SUPPORTED_WEB_SEARCH_SCOPES = frozenset(
+    {"balanced", "domestic", "international", "unrestricted"}
+)
 API_KEY_PLACEHOLDERS = frozenset({"replace_with_your_api_key"})
+TAVILY_API_KEY_PLACEHOLDERS = frozenset({"replace_with_your_tavily_api_key"})
+WEB_SEARCH_DOMAIN_PATTERN = re.compile(
+    r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z",
+    re.IGNORECASE,
+)
 
 
 def _read_int_env(
@@ -80,6 +99,44 @@ def _read_command_execution_mode() -> str:
     return value
 
 
+def _read_web_search_scope() -> str:
+    """读取默认联网检索范围，并拒绝无法执行的静默降级。"""
+    value = os.getenv(
+        "AGENT_WEB_SEARCH_DEFAULT_SCOPE",
+        DEFAULT_WEB_SEARCH_SCOPE,
+    ).strip().lower()
+    if value not in SUPPORTED_WEB_SEARCH_SCOPES:
+        choices = "、".join(sorted(SUPPORTED_WEB_SEARCH_SCOPES))
+        raise RuntimeError(
+            f"AGENT_WEB_SEARCH_DEFAULT_SCOPE 只能是：{choices}。"
+        )
+    return value
+
+
+def _read_web_search_domains(name: str) -> tuple[str, ...]:
+    """读取逗号分隔的搜索域名，拒绝 URL、路径和通配符。"""
+    raw_value = os.getenv(name, "").strip()
+    if not raw_value:
+        return ()
+    values: list[str] = []
+    seen: set[str] = set()
+    for raw_domain in raw_value.split(","):
+        domain = raw_domain.strip().casefold().removeprefix("www.")
+        if not WEB_SEARCH_DOMAIN_PATTERN.fullmatch(domain):
+            raise RuntimeError(
+                f"{name} 包含无效域名：{raw_domain!r}；"
+                "只填写域名，不要包含协议、路径或通配符。"
+            )
+        if domain not in seen:
+            values.append(domain)
+            seen.add(domain)
+    if len(values) > MAX_WEB_SEARCH_DOMAINS:
+        raise RuntimeError(
+            f"{name} 最多配置 {MAX_WEB_SEARCH_DOMAINS} 个域名。"
+        )
+    return tuple(values)
+
+
 def _resolve_workspace_root() -> Path:
     """解析工作区真实路径，确保后续安全检查使用稳定目录。"""
     workspace_root = Path(
@@ -114,6 +171,18 @@ class Settings:
     max_finalization_steps: int = DEFAULT_MAX_FINALIZATION_STEPS
     command_execution_mode: str = DEFAULT_COMMAND_EXECUTION_MODE
     command_container_image: str = DEFAULT_COMMAND_CONTAINER_IMAGE
+    tavily_api_key: str | None = None
+    web_search_timeout: float = DEFAULT_WEB_SEARCH_TIMEOUT
+    web_search_max_results: int = DEFAULT_WEB_SEARCH_MAX_RESULTS
+    web_search_auto_calls_per_turn: int = DEFAULT_WEB_SEARCH_AUTO_CALLS_PER_TURN
+    web_search_default_scope: str = DEFAULT_WEB_SEARCH_SCOPE
+    web_search_domestic_results: int = DEFAULT_WEB_SEARCH_DOMESTIC_RESULTS
+    web_search_international_results: int = (
+        DEFAULT_WEB_SEARCH_INTERNATIONAL_RESULTS
+    )
+    web_search_domestic_domains: tuple[str, ...] = ()
+    web_search_international_domains: tuple[str, ...] = ()
+    web_search_excluded_domains: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -190,6 +259,90 @@ class Settings:
         ).strip()
         if not command_container_image:
             raise RuntimeError("AGENT_COMMAND_CONTAINER_IMAGE 不能为空。")
+        tavily_api_key = os.getenv("TAVILY_API_KEY", "").strip() or None
+        if (
+            tavily_api_key is not None
+            and tavily_api_key.lower() in TAVILY_API_KEY_PLACEHOLDERS
+        ):
+            raise RuntimeError(
+                "请将 TAVILY_API_KEY 的占位值替换为自己的真实 Tavily API Key，"
+                "或者删除该配置以禁用联网搜索。"
+            )
+        web_search_timeout = _read_float_env(
+            "AGENT_WEB_SEARCH_TIMEOUT",
+            DEFAULT_WEB_SEARCH_TIMEOUT,
+            minimum=0,
+            allow_minimum=False,
+            error_message="AGENT_WEB_SEARCH_TIMEOUT 必须大于 0。",
+        )
+        web_search_max_results = _read_int_env(
+            "AGENT_WEB_SEARCH_MAX_RESULTS",
+            DEFAULT_WEB_SEARCH_MAX_RESULTS,
+            minimum=1,
+            error_message="AGENT_WEB_SEARCH_MAX_RESULTS 必须是正整数。",
+        )
+        if web_search_max_results > MAX_WEB_SEARCH_RESULTS:
+            raise RuntimeError(
+                f"AGENT_WEB_SEARCH_MAX_RESULTS 不能大于 {MAX_WEB_SEARCH_RESULTS}。"
+            )
+        web_search_auto_calls_per_turn = _read_int_env(
+            "AGENT_WEB_SEARCH_AUTO_CALLS_PER_TURN",
+            DEFAULT_WEB_SEARCH_AUTO_CALLS_PER_TURN,
+            minimum=0,
+            error_message=(
+                "AGENT_WEB_SEARCH_AUTO_CALLS_PER_TURN 不能小于 0。"
+            ),
+        )
+        if web_search_auto_calls_per_turn > MAX_WEB_SEARCH_AUTO_CALLS_PER_TURN:
+            raise RuntimeError(
+                "AGENT_WEB_SEARCH_AUTO_CALLS_PER_TURN 不能大于 "
+                f"{MAX_WEB_SEARCH_AUTO_CALLS_PER_TURN}。"
+            )
+        web_search_domestic_results = _read_int_env(
+            "AGENT_WEB_SEARCH_DOMESTIC_RESULTS",
+            DEFAULT_WEB_SEARCH_DOMESTIC_RESULTS,
+            minimum=1,
+            error_message=(
+                "AGENT_WEB_SEARCH_DOMESTIC_RESULTS 必须是正整数。"
+            ),
+        )
+        if web_search_domestic_results > MAX_WEB_SEARCH_RESULTS:
+            raise RuntimeError(
+                "AGENT_WEB_SEARCH_DOMESTIC_RESULTS 不能大于 "
+                f"{MAX_WEB_SEARCH_RESULTS}。"
+            )
+        web_search_international_results = _read_int_env(
+            "AGENT_WEB_SEARCH_INTERNATIONAL_RESULTS",
+            DEFAULT_WEB_SEARCH_INTERNATIONAL_RESULTS,
+            minimum=1,
+            error_message=(
+                "AGENT_WEB_SEARCH_INTERNATIONAL_RESULTS 必须是正整数。"
+            ),
+        )
+        if web_search_international_results > MAX_WEB_SEARCH_RESULTS:
+            raise RuntimeError(
+                "AGENT_WEB_SEARCH_INTERNATIONAL_RESULTS 不能大于 "
+                f"{MAX_WEB_SEARCH_RESULTS}。"
+            )
+        web_search_domestic_domains = _read_web_search_domains(
+            "AGENT_WEB_SEARCH_DOMESTIC_DOMAINS"
+        )
+        web_search_international_domains = _read_web_search_domains(
+            "AGENT_WEB_SEARCH_INTERNATIONAL_DOMAINS"
+        )
+        web_search_excluded_domains = _read_web_search_domains(
+            "AGENT_WEB_SEARCH_EXCLUDED_DOMAINS"
+        )
+        conflicting_search_domains = (
+            set(web_search_domestic_domains)
+            | set(web_search_international_domains)
+        ) & set(web_search_excluded_domains)
+        if conflicting_search_domains:
+            conflicts = "、".join(sorted(conflicting_search_domains))
+            raise RuntimeError(
+                "联网搜索域名不能同时出现在允许列表和排除列表："
+                f"{conflicts}。"
+            )
 
         return cls(
             api_key=api_key,
@@ -211,4 +364,16 @@ class Settings:
             max_finalization_steps=max_finalization_steps,
             command_execution_mode=_read_command_execution_mode(),
             command_container_image=command_container_image,
+            tavily_api_key=tavily_api_key,
+            web_search_timeout=web_search_timeout,
+            web_search_max_results=web_search_max_results,
+            web_search_auto_calls_per_turn=web_search_auto_calls_per_turn,
+            web_search_default_scope=_read_web_search_scope(),
+            web_search_domestic_results=web_search_domestic_results,
+            web_search_international_results=(
+                web_search_international_results
+            ),
+            web_search_domestic_domains=web_search_domestic_domains,
+            web_search_international_domains=web_search_international_domains,
+            web_search_excluded_domains=web_search_excluded_domains,
         )

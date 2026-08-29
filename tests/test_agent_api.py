@@ -50,6 +50,16 @@ class AllowAllConfirmer:
         return True
 
 
+class RecordingRegistry(ToolRegistry):
+    def __init__(self) -> None:
+        super().__init__()
+        self.begin_turn_calls = 0
+
+    def begin_turn(self) -> None:
+        self.begin_turn_calls += 1
+        super().begin_turn()
+
+
 class FailingAfterToolModel:
     model_name = "callback-model"
     available_models = ("callback-model",)
@@ -102,6 +112,21 @@ class AgentApiTests(unittest.TestCase):
         self.assertTrue(outcome.history_preserved)
         self.assertIs(agent.last_turn_outcome, outcome)
         self.assertEqual(agent.run_status, RunStatus.COMPLETED)
+
+    def test_each_chat_notifies_tools_of_a_new_turn(self) -> None:
+        model = CallbackModel([[TextDelta("第一轮")], [TextDelta("第二轮")]])
+        registry = RecordingRegistry()
+        agent = Agent(
+            self.settings,
+            model=model,
+            tools=registry,
+            session_store=self.store,
+        )
+
+        agent.chat("第一条消息")
+        agent.chat("第二条消息")
+
+        self.assertEqual(registry.begin_turn_calls, 2)
 
     def test_chat_replaces_empty_model_response_with_visible_message(self) -> None:
         model = CallbackModel([[]])

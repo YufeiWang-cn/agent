@@ -362,4 +362,3 @@ class EditorTabs(tk.Frame):
         self._items.clear()
         super().destroy()
 
-

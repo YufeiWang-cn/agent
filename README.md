@@ -108,6 +108,16 @@ docker image inspect python:3.10-slim
 | `DEEPSEEK_API_KEY` | 是 | 必须把 `replace_with_your_api_key` 替换为自己的真实密钥 |
 | `DEEPSEEK_BASE_URL` | 通常不需要 | 使用 DeepSeek 官方接口时保留默认值；使用兼容服务时改成服务提供的地址 |
 | `DEEPSEEK_MODEL` | 视账号而定 | 默认是 `deepseek-v4-pro`；账号或兼容服务不支持时改成实际可用的模型名称 |
+| `TAVILY_API_KEY` | 联网搜索时必须 | 默认不启用；需要 `web_search` 时取消注释并替换为自己的 Tavily API Key |
+| `AGENT_WEB_SEARCH_TIMEOUT` | 否 | 联网搜索超时秒数，默认 `20` |
+| `AGENT_WEB_SEARCH_MAX_RESULTS` | 否 | 普通 `unrestricted` 搜索的默认返回数量，可设置为 `1` 到 `10` |
+| `AGENT_WEB_SEARCH_DEFAULT_SCOPE` | 否 | 默认 `balanced`；也可设置为 `domestic`、`international` 或 `unrestricted` |
+| `AGENT_WEB_SEARCH_DOMESTIC_RESULTS` | 否 | 国内检索期望返回数量，默认 `3`，可设置为 `1` 到 `10` |
+| `AGENT_WEB_SEARCH_INTERNATIONAL_RESULTS` | 否 | 国际检索期望返回数量，默认 `3`，可设置为 `1` 到 `10` |
+| `AGENT_WEB_SEARCH_DOMESTIC_DOMAINS` | 否 | 国内检索允许的域名，英文逗号分隔；留空不限制，只填写域名，不填写协议或路径 |
+| `AGENT_WEB_SEARCH_INTERNATIONAL_DOMAINS` | 否 | 国际检索允许的域名，格式同上；适合固定为可信国际来源 |
+| `AGENT_WEB_SEARCH_EXCLUDED_DOMAINS` | 否 | 所有检索范围共同排除的域名，英文逗号分隔 |
+| `AGENT_WEB_SEARCH_AUTO_CALLS_PER_TURN` | 否 | 每轮自动执行的网络请求数，默认 `2`，可设置为 `0` 到 `5`；一次 `balanced` 使用 2 次，设为 `0` 时每次都确认 |
 | `AGENT_WORKSPACE` | 否 | 需要限制到其他工作区时，取消注释并把示例路径完整替换为真实绝对路径 |
 | `AGENT_COMMAND_EXECUTION_MODE` | 否 | 默认 `local`；需要 Docker 隔离 Python 命令时改为 `docker` |
 | `AGENT_COMMAND_CONTAINER_IMAGE` | 否 | 修改后必须确保对应镜像已存在；项目不会自动拉取 |
@@ -117,6 +127,8 @@ docker image inspect python:3.10-slim
 `DEEPSEEK_MAX_CONTEXT_TOKENS` 用于设置发送给模型的消息 Token 预算，默认值为 `8000`。这里使用本地近似估算，实际计费 Token 以 DeepSeek 返回的数据为准。
 
 模型请求默认超时为 60 秒，临时网络错误最多重试 3 次，等待时间依次为 1、2、4 秒。可以通过 `.env` 中的 `DEEPSEEK_REQUEST_TIMEOUT`、`DEEPSEEK_MAX_RETRIES` 和 `DEEPSEEK_RETRY_BASE_DELAY` 调整。
+
+联网搜索使用 Tavily Search API。先在 [Tavily 官方控制台](https://app.tavily.com) 获取 API Key，然后在 `.env` 中取消 `TAVILY_API_KEY` 的注释并替换占位值；重新启动 Agent 后，`/tools` 应显示 `web_search`。未配置该 Key 时工具不会注册，其他离线功能不受影响。默认 `balanced` 模式只产生一张工具卡，但会针对同一信息目标并行执行一次国内检索和一次国际检索：国内请求使用中文关键词，国际请求使用英文关键词，两路分别采用 `AGENT_WEB_SEARCH_DOMESTIC_RESULTS` 和 `AGENT_WEB_SEARCH_INTERNATIONAL_RESULTS`，模型不能自行覆盖这两个配置。如果希望进一步限制来源，可用三个 `*_DOMAINS` 配置填写可信域名或排除域名；必须只写域名，例如 `reuters.com,apnews.com`，不要填写 `https://`、路径或通配符。结果数量是期望上限，过滤无效 URL、空标题和同域名重复结果后，实际数量可能更少；系统不会为凑数保留低质量重复来源。`requested_scope` 表示请求的来源倾向，不是对网站实际地域归属的认证。用户明确限定来源、指定网站或只需要官方一手资料时，Agent 可以只执行相应范围。自动额度按真实第三方请求计数，因此一次 `balanced` 会使用默认的 2 次额度；同一轮重复搜索或继续发起搜索会先显示参数并等待用户确认，拒绝后不会发送网络请求。确认界面不会显示 API Key。明显疑似包含 API Key、Token、密码或私钥的搜索词会被直接拒绝，不会通过确认放行。搜索词会发送给第三方服务，请勿搜索个人隐私或工作区敏感内容。工具固定使用基础搜索，不请求网页全文或 Tavily 生成的二次答案，每路最多返回 10 条带来源 URL 的摘要；一路临时失败时会保留另一路结果并在工具卡显示“部分完成”，两路都失败才视为执行失败。
 
 `AGENT_WORKSPACE` 是文件工具唯一允许访问的根目录，默认是项目根目录；`AGENT_MAX_FILE_SIZE` 控制单次读取或写入的最大字节数，默认 `100000`。
 
@@ -138,7 +150,7 @@ deepseek-agent-gui
 python gui.py
 ```
 
-界面支持流式显示、多轮对话、停止生成、清空对话以及完整展示高风险工具参数的确认窗口。补丁确认会默认展示带新旧行号和增删配色的差异视图，并可通过按钮或 `F11` 全屏审阅。工具调用会显示为默认折叠的状态卡片，点击后可以在带滚轮的固定高度区域中查看完整参数和结果，避免长结果占满聊天窗口。JSON 会自动缩进，常见代码和数据格式会使用深色编辑器主题进行语法着色；点击工具卡片中的“全屏”可以打开最大化查看器，`F11` 切换真正全屏，`Esc` 退出全屏或关闭查看器。左侧栏可以拖动调整宽度或通过顶部按钮折叠；右键项目可以新建、重命名或删除，右键会话可以打开、重命名、移动到项目或删除。删除项目只会把其中的会话移到“未分类”。项目及会话归属会自动保存在 `data/projects.json` 和会话文件中。
+界面支持流式显示、多轮对话、停止生成、清空对话以及完整展示高风险工具参数的确认窗口。助手消息中的 Markdown `http/https` 链接可以点击并通过系统默认浏览器打开；`file:`、`javascript:`、包含登录凭据的 URL 和相对路径不会获得点击行为。补丁确认会默认展示带新旧行号和增删配色的差异视图，并可通过按钮或 `F11` 全屏审阅。工具调用会显示为默认折叠的状态卡片，点击后可以在带滚轮的固定高度区域中查看完整参数和结果，避免长结果占满聊天窗口。JSON 会自动缩进，常见代码和数据格式会使用深色编辑器主题进行语法着色；点击工具卡片中的“全屏”可以打开最大化查看器，`F11` 切换真正全屏，`Esc` 退出全屏或关闭查看器。左侧栏可以拖动调整宽度或通过顶部按钮折叠；右键项目可以新建、重命名或删除，右键会话可以打开、重命名、移动到项目或删除。删除项目只会把其中的会话移到“未分类”。项目及会话归属会自动保存在 `data/projects.json` 和会话文件中。
 
 输入框中按 `Enter` 发送消息，按 `Shift+Enter` 换行。
 
@@ -185,6 +197,7 @@ python main.py
 - `calculator`：安全计算基础数学表达式
 - `update_plan`：创建、更新或替换复杂任务的结构化执行计划和规划方案
 - `get_current_time`：获取指定时区的当前日期和时间
+- `web_search`：搜索公开互联网中的当前信息，可区分国内、国际或不限来源范围，并返回标题、来源 URL 和相关摘要；配置 `TAVILY_API_KEY` 后启用
 - `list_directory`：列出工作目录内的直接子项
 - `read_text_file`：读取工作目录内的 UTF-8 文本文件
 - `search_text`：递归搜索工作目录内的 UTF-8 文本并返回文件和行号

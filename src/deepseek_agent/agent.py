@@ -137,6 +137,26 @@ class Agent:
                 plan_updater=self._commit_plan,
                 command_execution_mode=settings.command_execution_mode,
                 command_container_image=settings.command_container_image,
+                web_search_api_key=settings.tavily_api_key,
+                web_search_timeout=settings.web_search_timeout,
+                web_search_max_results=settings.web_search_max_results,
+                web_search_auto_calls_per_turn=(
+                    settings.web_search_auto_calls_per_turn
+                ),
+                web_search_default_scope=settings.web_search_default_scope,
+                web_search_domestic_results=settings.web_search_domestic_results,
+                web_search_international_results=(
+                    settings.web_search_international_results
+                ),
+                web_search_domestic_domains=(
+                    settings.web_search_domestic_domains
+                ),
+                web_search_international_domains=(
+                    settings.web_search_international_domains
+                ),
+                web_search_excluded_domains=(
+                    settings.web_search_excluded_domains
+                ),
             )
         )
         self._conversation = Conversation(settings.system_prompt)
@@ -539,6 +559,7 @@ class Agent:
     ) -> list[ToolExecutionRecord]:
         if self._turn_state.id is None:
             # 私有方法的测试或扩展调用可能绕过 chat()，此时仍需建立可追踪的临时轮次。
+            self._tools.begin_turn()
             turn_id = uuid4().hex
             self._turn_state.begin(turn_id)
             self._record_turn_started_safely(turn_id)
@@ -748,6 +769,7 @@ class Agent:
         with self._run_status_lock:
             if self._run_status.active:
                 raise RuntimeError("当前 Agent 已经有一轮任务正在执行。")
+            self._tools.begin_turn()
             self._run_status = RunStatus.RUNNING
         self._plan_runtime.begin_turn()
 

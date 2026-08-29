@@ -60,6 +60,64 @@ class ConversationViewTests(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_markdown_links_open_in_browser_and_clear_their_bindings(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk 不可用：{error}")
+        root.withdraw()
+        try:
+            opened: list[str] = []
+            view = ConversationView(
+                root,
+                on_prompt_suggestion=lambda _prompt: None,
+                focus_composer=lambda: None,
+            )
+            view.pack(fill="both", expand=True)
+            view._renderer._open_url = opened.append
+
+            view._append_markdown_message(
+                "DeepSeek",
+                "访问 [官方文档](https://example.com/docs)，"
+                "不要打开 [危险地址](file:///C:/secret.txt)。",
+                "assistant",
+            )
+
+            link_tags = [
+                tag
+                for tag in view._chat_view.tag_names()
+                if tag.startswith("md_link_target_")
+            ]
+            self.assertEqual(len(link_tags), 1)
+            link_range = view._chat_view.tag_nextrange(link_tags[0], "1.0", "end")
+            self.assertTrue(link_range)
+            self.assertEqual(
+                view._chat_view.get(link_range[0], link_range[1]),
+                "官方文档",
+            )
+            self.assertTrue(
+                view._chat_view.tk.call(
+                    view._chat_view._w,
+                    "tag",
+                    "bind",
+                    link_tags[0],
+                    "<Button-1>",
+                )
+            )
+
+            self.assertEqual(
+                view._renderer._open_link("https://example.com/docs"),
+                "break",
+            )
+            self.assertEqual(opened, ["https://example.com/docs"])
+            view._renderer._open_link("file:///C:/secret.txt")
+            self.assertEqual(opened, ["https://example.com/docs"])
+
+            view._renderer.clear()
+            self.assertNotIn(link_tags[0], view._chat_view.tag_names())
+        finally:
+            root.destroy()
+
     def test_completed_turn_replaces_only_the_live_response_region(self) -> None:
         try:
             root = tk.Tk()

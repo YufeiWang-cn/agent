@@ -33,6 +33,11 @@ class ToolRegistry:
     def names(self) -> tuple[str, ...]:
         return tuple(self._tools)
 
+    def begin_turn(self) -> None:
+        """通知全部工具开始新的用户轮次。"""
+        for tool in self._tools.values():
+            tool.begin_turn()
+
     def execute(self, name: str, raw_arguments: str) -> str:
         tool, arguments = self.prepare(name, raw_arguments)
         return tool.execute(arguments)

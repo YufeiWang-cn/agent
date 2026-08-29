@@ -3,6 +3,7 @@
 import json
 import re
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,10 +21,11 @@ class MarkdownBlock:
 
 @dataclass(frozen=True, slots=True)
 class InlineSpan:
-    """表示带有粗体、斜体或代码样式的行内文本片段。"""
+    """表示带有行内样式和可选安全链接目标的文本片段。"""
 
     text: str
     style: str = "plain"
+    target: str | None = None
 
 
 _BLOCK_START = re.compile(
@@ -187,12 +189,37 @@ def parse_inline(content: str) -> list[InlineSpan]:
         elif token.startswith(("*", "_")):
             spans.append(InlineSpan(token[1:-1], "italic"))
         elif token.startswith("["):
-            label, _separator, _target = token[1:].partition("](")
-            spans.append(InlineSpan(label, "link"))
+            label, separator, raw_target = token[1:-1].partition("](")
+            target = normalize_web_url(raw_target) if separator else None
+            if target is None:
+                spans.append(InlineSpan(label))
+            else:
+                spans.append(InlineSpan(label, "link", target))
         position = match.end()
     if position < len(content):
         spans.append(InlineSpan(content[position:]))
     return spans or [InlineSpan(content)]
+
+
+def normalize_web_url(target: str) -> str | None:
+    """只接受不含凭据和控制字符的绝对 HTTP(S) URL。"""
+    normalized = target.strip()
+    if normalized.startswith("<") and normalized.endswith(">"):
+        normalized = normalized[1:-1].strip()
+    if not normalized or len(normalized) > 2_048:
+        return None
+    if any(character.isspace() or ord(character) < 32 for character in normalized):
+        return None
+    try:
+        parsed = urlsplit(normalized)
+        hostname = parsed.hostname
+    except ValueError:
+        return None
+    if parsed.scheme.lower() not in {"http", "https"} or hostname is None:
+        return None
+    if parsed.username is not None or parsed.password is not None:
+        return None
+    return normalized
 
 
 def _format_pure_json(content: str) -> str | None:

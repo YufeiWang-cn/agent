@@ -70,6 +70,7 @@ class Tool(ABC):
 
     name: str
     description: str
+    confirmation_description: str | None = None
     parameters: JsonObject
     requires_confirmation: bool = False
     effect: ToolEffect = ToolEffect.READ_ONLY
@@ -77,6 +78,9 @@ class Tool(ABC):
     idempotent: bool = False
     supports_rollback: bool = False
     timeout_seconds: float | None = None
+
+    def begin_turn(self) -> None:
+        """在新一轮用户消息开始时重置工具的临时状态。"""
 
     def requires_confirmation_for(self, arguments: JsonObject) -> bool:
         """返回当前参数是否需要确认；动态风险工具可以覆盖此方法。"""

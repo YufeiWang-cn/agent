@@ -91,6 +91,41 @@ class DiffViewerTests(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_confirmation_size_adapts_to_parent_and_screen(self) -> None:
+        self.assertEqual(
+            ToolConfirmationDialog._preferred_size(
+                parent_width=1_180,
+                parent_height=780,
+                screen_width=1_920,
+                screen_height=1_080,
+            ),
+            (968, 640),
+        )
+        self.assertEqual(
+            ToolConfirmationDialog._preferred_size(
+                parent_width=400,
+                parent_height=300,
+                screen_width=800,
+                screen_height=600,
+            ),
+            (720, 500),
+        )
+
+    def test_confirmation_center_falls_back_when_parent_is_hidden(self) -> None:
+        self.assertEqual(
+            ToolConfirmationDialog._center_position(
+                parent_x=0,
+                parent_y=0,
+                parent_width=1,
+                parent_height=1,
+                dialog_width=720,
+                dialog_height=500,
+                screen_width=1_920,
+                screen_height=1_080,
+            ),
+            (600, 290),
+        )
+
     def test_confirmation_selects_diff_and_can_toggle_fullscreen(self) -> None:
         root = self._create_root()
         request = ConfirmationRequest(

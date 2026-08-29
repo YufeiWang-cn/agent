@@ -1,5 +1,6 @@
 """实现工具调用详情卡片和全屏查看器。"""
 
+import json
 import tkinter as tk
 
 from .editor import EditorTabs, SyntaxText
@@ -190,6 +191,7 @@ class ToolCallCard:
     def __init__(self, parent: tk.Text, name: str, arguments: str) -> None:
         self._chat_view = parent
         self._name = name
+        self._display_name = self._make_display_name(name, arguments)
         self._arguments = arguments
         self._result: str | None = None
         self._result_language = _content_language_hint(arguments)
@@ -209,7 +211,7 @@ class ToolCallCard:
         header.pack_propagate(False)
         self._toggle_button = tk.Button(
             header,
-            text=f"▶  {name}",
+            text=f"▶  {self._display_name}",
             command=self.toggle,
             anchor="w",
             background="#F8FAFC",
@@ -252,7 +254,7 @@ class ToolCallCard:
 
         self._summary = tk.Label(
             self.frame,
-            text=self._make_summary(arguments),
+            text=self._make_argument_summary(name, arguments),
             anchor="w",
             justify="left",
             background=CARD_BACKGROUND,
@@ -290,12 +292,13 @@ class ToolCallCard:
     def set_result(self, result: str) -> None:
         self._result = result
         is_failure = result.startswith(("工具执行失败", "工具发生", "用户拒绝"))
+        is_partial = self._is_partial_search_result(result)
         self._status.configure(
-            text="失败" if is_failure else "已完成",
-            foreground=DANGER if is_failure else ASSISTANT_COLOR,
-            background="#FEF2F2" if is_failure else "#ECFDF5",
+            text="失败" if is_failure else "部分完成" if is_partial else "已完成",
+            foreground=DANGER if is_failure else "#B45309" if is_partial else ASSISTANT_COLOR,
+            background="#FEF2F2" if is_failure else "#FFF7ED" if is_partial else "#ECFDF5",
         )
-        self._summary.configure(text=self._make_summary(result))
+        self._summary.configure(text=self._make_result_summary(self._name, result))
         self._result_editor = self._tabs.add_or_update(
             "result",
             "结果",
@@ -308,7 +311,7 @@ class ToolCallCard:
     def toggle(self) -> None:
         self._expanded = not self._expanded
         arrow = "▼" if self._expanded else "▶"
-        self._toggle_button.configure(text=f"{arrow}  {self._name}")
+        self._toggle_button.configure(text=f"{arrow}  {self._display_name}")
         if self._expanded:
             self._details_separator.pack(fill="x")
             self._details_frame.pack(
@@ -381,3 +384,81 @@ class ToolCallCard:
         if not compact:
             return "暂无详细内容"
         return compact if len(compact) <= 100 else compact[:100] + "…"
+
+    @staticmethod
+    def _make_display_name(name: str, arguments: str) -> str:
+        if name != "web_search":
+            return name
+        try:
+            payload = json.loads(arguments)
+        except json.JSONDecodeError:
+            return "联网搜索"
+        if not isinstance(payload, dict):
+            return "联网搜索"
+        labels = {
+            "balanced": "联网搜索 · 国内 + 国际",
+            "domestic": "联网搜索 · 国内",
+            "international": "联网搜索 · 国际",
+            "unrestricted": "联网搜索 · 不限来源",
+        }
+        return labels.get(payload.get("scope"), "联网搜索")
+
+    @classmethod
+    def _make_argument_summary(cls, name: str, arguments: str) -> str:
+        if name != "web_search":
+            return cls._make_summary(arguments)
+        try:
+            payload = json.loads(arguments)
+        except json.JSONDecodeError:
+            return cls._make_summary(arguments)
+        if not isinstance(payload, dict):
+            return cls._make_summary(arguments)
+        query = payload.get("query")
+        international_query = payload.get("international_query")
+        if isinstance(query, str) and isinstance(international_query, str):
+            return cls._make_summary(f"国内：{query}  ·  国际：{international_query}")
+        if isinstance(query, str):
+            return cls._make_summary(query)
+        return cls._make_summary(arguments)
+
+    @classmethod
+    def _make_result_summary(cls, name: str, result: str) -> str:
+        if name != "web_search":
+            return cls._make_summary(result)
+        try:
+            payload = json.loads(result)
+        except json.JSONDecodeError:
+            return cls._make_summary(result)
+        if not isinstance(payload, dict):
+            return cls._make_summary(result)
+        if payload.get("requested_scope") == "balanced":
+            groups = payload.get("groups")
+            if isinstance(groups, dict):
+                domestic = groups.get("domestic")
+                international = groups.get("international")
+                domestic_count = (
+                    domestic.get("result_count", 0)
+                    if isinstance(domestic, dict)
+                    else 0
+                )
+                international_count = (
+                    international.get("result_count", 0)
+                    if isinstance(international, dict)
+                    else 0
+                )
+                suffix = " · 一路搜索失败" if payload.get("partial_failure") else ""
+                return (
+                    f"国内 {domestic_count} 条 · 国际 {international_count} 条{suffix}"
+                )
+        count = payload.get("result_count")
+        if isinstance(count, int) and not isinstance(count, bool):
+            return f"找到 {count} 条来源"
+        return cls._make_summary(result)
+
+    @staticmethod
+    def _is_partial_search_result(result: str) -> bool:
+        try:
+            payload = json.loads(result)
+        except json.JSONDecodeError:
+            return False
+        return isinstance(payload, dict) and payload.get("partial_failure") is True

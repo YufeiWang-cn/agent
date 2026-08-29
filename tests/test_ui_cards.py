@@ -19,6 +19,55 @@ from deepseek_agent.ui.formatting import _confirmation_content_previews
 
 
 class UiCardTests(unittest.TestCase):
+    def test_web_search_card_uses_readable_scope_and_counts(self) -> None:
+        arguments = json.dumps(
+            {
+                "query": "人工智能进展",
+                "international_query": "artificial intelligence progress",
+                "scope": "balanced",
+            },
+            ensure_ascii=False,
+        )
+        result = json.dumps(
+            {
+                "requested_scope": "balanced",
+                "result_count": 5,
+                "groups": {
+                    "domestic": {"result_count": 2},
+                    "international": {"result_count": 3},
+                },
+                "partial_failure": False,
+            },
+            ensure_ascii=False,
+        )
+
+        self.assertEqual(
+            ToolCallCard._make_display_name("web_search", arguments),
+            "联网搜索 · 国内 + 国际",
+        )
+        self.assertEqual(
+            ToolCallCard._make_argument_summary("web_search", arguments),
+            "国内：人工智能进展 · 国际：artificial intelligence progress",
+        )
+        self.assertEqual(
+            ToolCallCard._make_result_summary("web_search", result),
+            "国内 2 条 · 国际 3 条",
+        )
+        self.assertFalse(ToolCallCard._is_partial_search_result(result))
+
+        partial = json.dumps(
+            {
+                "requested_scope": "balanced",
+                "groups": {"domestic": {"result_count": 2}},
+                "partial_failure": True,
+            }
+        )
+        self.assertEqual(
+            ToolCallCard._make_result_summary("web_search", partial),
+            "国内 2 条 · 国际 0 条 · 一路搜索失败",
+        )
+        self.assertTrue(ToolCallCard._is_partial_search_result(partial))
+
     def test_plan_card_renders_progress_and_can_collapse(self) -> None:
         try:
             root = tk.Tk()

@@ -37,6 +37,12 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.command_execution_mode, "docker")
         self.assertEqual(settings.command_container_image, "example/python:test")
         self.assertEqual(settings.workspace_root, Path(temporary_directory).resolve())
+        self.assertEqual(settings.web_search_default_scope, "balanced")
+        self.assertEqual(settings.web_search_domestic_results, 3)
+        self.assertEqual(settings.web_search_international_results, 3)
+        self.assertEqual(settings.web_search_domestic_domains, ())
+        self.assertEqual(settings.web_search_international_domains, ())
+        self.assertEqual(settings.web_search_excluded_domains, ())
 
     def test_from_env_rejects_invalid_integer(self) -> None:
         environment = {
@@ -54,6 +60,108 @@ class SettingsTests(unittest.TestCase):
             with patch("deepseek_agent.config.load_dotenv"):
                 with self.assertRaisesRegex(RuntimeError, "占位值"):
                     Settings.from_env()
+
+    def test_from_env_loads_optional_web_search_configuration(self) -> None:
+        environment = {
+            "DEEPSEEK_API_KEY": "test-key",
+            "TAVILY_API_KEY": "tvly-real-key",
+            "AGENT_WEB_SEARCH_TIMEOUT": "12.5",
+            "AGENT_WEB_SEARCH_MAX_RESULTS": "7",
+            "AGENT_WEB_SEARCH_AUTO_CALLS_PER_TURN": "3",
+            "AGENT_WEB_SEARCH_DEFAULT_SCOPE": "international",
+            "AGENT_WEB_SEARCH_DOMESTIC_RESULTS": "2",
+            "AGENT_WEB_SEARCH_INTERNATIONAL_RESULTS": "6",
+            "AGENT_WEB_SEARCH_DOMESTIC_DOMAINS": "Gov.cn, xinhuanet.com,gov.cn",
+            "AGENT_WEB_SEARCH_INTERNATIONAL_DOMAINS": "Reuters.com,apnews.com",
+            "AGENT_WEB_SEARCH_EXCLUDED_DOMAINS": "spam.example",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            with patch("deepseek_agent.config.load_dotenv"):
+                settings = Settings.from_env()
+
+        self.assertEqual(settings.tavily_api_key, "tvly-real-key")
+        self.assertEqual(settings.web_search_timeout, 12.5)
+        self.assertEqual(settings.web_search_max_results, 7)
+        self.assertEqual(settings.web_search_auto_calls_per_turn, 3)
+        self.assertEqual(settings.web_search_default_scope, "international")
+        self.assertEqual(settings.web_search_domestic_results, 2)
+        self.assertEqual(settings.web_search_international_results, 6)
+        self.assertEqual(
+            settings.web_search_domestic_domains,
+            ("gov.cn", "xinhuanet.com"),
+        )
+        self.assertEqual(
+            settings.web_search_international_domains,
+            ("reuters.com", "apnews.com"),
+        )
+        self.assertEqual(settings.web_search_excluded_domains, ("spam.example",))
+
+    def test_from_env_rejects_tavily_placeholder_and_excessive_results(self) -> None:
+        cases = (
+            (
+                {
+                    "DEEPSEEK_API_KEY": "test-key",
+                    "TAVILY_API_KEY": "replace_with_your_tavily_api_key",
+                },
+                "TAVILY_API_KEY",
+            ),
+            (
+                {
+                    "DEEPSEEK_API_KEY": "test-key",
+                    "AGENT_WEB_SEARCH_MAX_RESULTS": "11",
+                },
+                "不能大于 10",
+            ),
+            (
+                {
+                    "DEEPSEEK_API_KEY": "test-key",
+                    "AGENT_WEB_SEARCH_AUTO_CALLS_PER_TURN": "6",
+                },
+                "不能大于 5",
+            ),
+            (
+                {
+                    "DEEPSEEK_API_KEY": "test-key",
+                    "AGENT_WEB_SEARCH_DEFAULT_SCOPE": "worldwide",
+                },
+                "AGENT_WEB_SEARCH_DEFAULT_SCOPE",
+            ),
+            (
+                {
+                    "DEEPSEEK_API_KEY": "test-key",
+                    "AGENT_WEB_SEARCH_DOMESTIC_RESULTS": "11",
+                },
+                "不能大于 10",
+            ),
+            (
+                {
+                    "DEEPSEEK_API_KEY": "test-key",
+                    "AGENT_WEB_SEARCH_INTERNATIONAL_RESULTS": "0",
+                },
+                "必须是正整数",
+            ),
+            (
+                {
+                    "DEEPSEEK_API_KEY": "test-key",
+                    "AGENT_WEB_SEARCH_DOMESTIC_DOMAINS": "https://gov.cn/news",
+                },
+                "只填写域名",
+            ),
+            (
+                {
+                    "DEEPSEEK_API_KEY": "test-key",
+                    "AGENT_WEB_SEARCH_DOMESTIC_DOMAINS": "example.com",
+                    "AGENT_WEB_SEARCH_EXCLUDED_DOMAINS": "example.com",
+                },
+                "同时出现在",
+            ),
+        )
+        for environment, message in cases:
+            with self.subTest(environment=environment):
+                with patch.dict(os.environ, environment, clear=True):
+                    with patch("deepseek_agent.config.load_dotenv"):
+                        with self.assertRaisesRegex(RuntimeError, message):
+                            Settings.from_env()
 
     def test_from_env_rejects_negative_finalization_steps(self) -> None:
         environment = {

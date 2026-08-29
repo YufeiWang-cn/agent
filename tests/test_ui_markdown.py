@@ -12,7 +12,7 @@ from deepseek_agent.ui.formatting import (
     _format_editor_content,
     _split_emoji_spans,
 )
-from deepseek_agent.ui.markdown import parse_inline, parse_markdown
+from deepseek_agent.ui.markdown import normalize_web_url, parse_inline, parse_markdown
 
 
 class UiMarkdownTests(unittest.TestCase):
@@ -109,6 +109,36 @@ class UiMarkdownTests(unittest.TestCase):
                 ("斜体", "italic"),
             ],
         )
+
+    def test_inline_links_keep_only_safe_http_targets(self) -> None:
+        spans = parse_inline(
+            "访问 [官网](https://example.com/path?q=1) 或 "
+            "[危险链接](javascript:void)。"
+        )
+
+        self.assertEqual(
+            [(span.text, span.style, span.target) for span in spans],
+            [
+                ("访问 ", "plain", None),
+                ("官网", "link", "https://example.com/path?q=1"),
+                (" 或 ", "plain", None),
+                ("危险链接", "plain", None),
+                ("。", "plain", None),
+            ],
+        )
+        self.assertEqual(
+            normalize_web_url("<https://example.com/docs>"),
+            "https://example.com/docs",
+        )
+        for target in (
+            "file:///C:/secret.txt",
+            "javascript:alert(1)",
+            "https://user:password@example.com",
+            "../relative/path",
+            "https://example.com/contains space",
+        ):
+            with self.subTest(target=target):
+                self.assertIsNone(normalize_web_url(target))
 
 
 if __name__ == "__main__":

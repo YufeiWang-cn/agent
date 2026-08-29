@@ -1,11 +1,12 @@
 """渲染普通消息、Markdown 块和嵌入式对话卡片。"""
 
 import tkinter as tk
+import webbrowser
 from typing import Callable
 
 from .cards import MarkdownCodeCard, MarkdownTableCard, UserMessageCard
 from .formatting import _split_emoji_spans
-from .markdown import MarkdownBlock, parse_inline, parse_markdown
+from .markdown import MarkdownBlock, normalize_web_url, parse_inline, parse_markdown
 
 
 class ConversationRenderer:
@@ -19,12 +20,17 @@ class ConversationRenderer:
         selected_turn: Callable[[], int | None],
         rendering_history: Callable[[], bool],
         on_layout_changed: Callable[[], None],
+        open_url: Callable[[str], object] | None = None,
     ) -> None:
         self._chat_view = chat_view
         self._is_at_bottom = is_at_bottom
         self._selected_turn = selected_turn
         self._rendering_history = rendering_history
         self._on_layout_changed = on_layout_changed
+        self._open_url = open_url or webbrowser.open_new_tab
+        self._default_cursor = str(chat_view.cget("cursor"))
+        self._link_counter = 0
+        self._link_tags: set[str] = set()
         self.code_cards: list[MarkdownCodeCard] = []
         self.table_cards: list[MarkdownTableCard] = []
         self.user_cards: list[UserMessageCard] = []
@@ -97,6 +103,11 @@ class ConversationRenderer:
         self.code_cards.clear()
         self.table_cards.clear()
         self.user_cards.clear()
+        if self._link_tags:
+            self._chat_view.tag_delete(*self._link_tags)
+            self._link_tags.clear()
+        self._link_counter = 0
+        self._chat_view.configure(cursor=self._default_cursor)
 
     def _append_user_message(self, author: str, content: str) -> None:
         self._chat_view.configure(state="normal")
@@ -184,7 +195,41 @@ class ConversationRenderer:
             style_allowed = allow_font_styles or span.style in {"code", "link"}
             if style_tag is not None and style_allowed:
                 tags = (*base_tags, style_tag)
+            if span.style == "link" and span.target is not None:
+                tags = (*tags, self._register_link(span.target))
             self._insert_chat_text(span.text, tags)
+
+    def _register_link(self, target: str) -> str:
+        self._link_counter += 1
+        tag = f"md_link_target_{self._link_counter}"
+        self._link_tags.add(tag)
+        self._chat_view.tag_bind(
+            tag,
+            "<Button-1>",
+            lambda _event, url=target: self._open_link(url),
+        )
+        self._chat_view.tag_bind(
+            tag,
+            "<Enter>",
+            lambda _event: self._chat_view.configure(cursor="hand2"),
+        )
+        self._chat_view.tag_bind(
+            tag,
+            "<Leave>",
+            lambda _event: self._chat_view.configure(cursor=self._default_cursor),
+        )
+        return tag
+
+    def _open_link(self, target: str) -> str:
+        safe_target = normalize_web_url(target)
+        if safe_target is None:
+            return "break"
+        try:
+            self._open_url(safe_target)
+        except (OSError, webbrowser.Error):
+            # 浏览器不可用不应让 Tk 事件回调中断整个界面。
+            pass
+        return "break"
 
     def _insert_chat_text(
         self,
