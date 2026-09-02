@@ -479,12 +479,19 @@ class ToolCallCard:
                     else 0
                 )
                 suffix = " · 一路搜索失败" if payload.get("partial_failure") else ""
+                filtered = payload.get("quality_filtered_count")
+                if isinstance(filtered, int) and not isinstance(filtered, bool) and filtered:
+                    suffix += f" · 过滤 {filtered} 条候选"
                 return (
                     f"国内 {domestic_count} 条 · 国际 {international_count} 条{suffix}"
                 )
         count = payload.get("result_count")
         if isinstance(count, int) and not isinstance(count, bool):
-            return f"找到 {count} 条来源"
+            summary = f"找到 {count} 条来源"
+            filtered = payload.get("quality_filtered_count")
+            if isinstance(filtered, int) and not isinstance(filtered, bool) and filtered:
+                summary += f" · 过滤 {filtered} 条候选"
+            return summary
         return cls._make_summary(result)
 
     @staticmethod

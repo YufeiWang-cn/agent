@@ -68,6 +68,18 @@ class UiCardTests(unittest.TestCase):
         )
         self.assertTrue(ToolCallCard._is_partial_search_result(partial))
 
+        filtered = json.dumps(
+            {
+                "requested_scope": "unrestricted",
+                "result_count": 2,
+                "quality_filtered_count": 4,
+            }
+        )
+        self.assertEqual(
+            ToolCallCard._make_result_summary("web_search", filtered),
+            "找到 2 条来源 · 过滤 4 条候选",
+        )
+
     def test_web_page_card_summarizes_question_and_partial_result(self) -> None:
         arguments = json.dumps(
             {

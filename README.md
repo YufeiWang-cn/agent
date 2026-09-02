@@ -111,6 +111,7 @@ docker image inspect python:3.10-slim
 | `TAVILY_API_KEY` | 联网搜索和正文核验时必须 | 默认不启用；需要 `web_search` 和 `read_web_page` 时取消注释并替换为自己的 Tavily API Key |
 | `AGENT_WEB_SEARCH_TIMEOUT` | 否 | 联网搜索超时秒数，默认 `20` |
 | `AGENT_WEB_SEARCH_MAX_RESULTS` | 否 | 普通 `unrestricted` 搜索的默认返回数量，可设置为 `1` 到 `10` |
+| `AGENT_WEB_SEARCH_MIN_SCORE` | 否 | 搜索结果最低相关度，默认 `0.25`，可设置为 `0` 到 `1`；越高越严格，也越容易减少结果 |
 | `AGENT_WEB_SEARCH_DEFAULT_SCOPE` | 否 | 默认 `balanced`；也可设置为 `domestic`、`international` 或 `unrestricted` |
 | `AGENT_WEB_SEARCH_DOMESTIC_RESULTS` | 否 | 国内检索期望返回数量，默认 `3`，可设置为 `1` 到 `10` |
 | `AGENT_WEB_SEARCH_INTERNATIONAL_RESULTS` | 否 | 国际检索期望返回数量，默认 `3`，可设置为 `1` 到 `10` |
@@ -134,9 +135,9 @@ docker image inspect python:3.10-slim
 
 模型请求默认超时为 60 秒，临时网络错误最多重试 3 次，等待时间依次为 1、2、4 秒。可以通过 `.env` 中的 `DEEPSEEK_REQUEST_TIMEOUT`、`DEEPSEEK_MAX_RETRIES` 和 `DEEPSEEK_RETRY_BASE_DELAY` 调整。
 
-联网搜索和正文核验分别使用 Tavily Search API 与 Extract API。先在 [Tavily 官方控制台](https://app.tavily.com) 获取 API Key，然后在 `.env` 中取消 `TAVILY_API_KEY` 的注释并替换占位值；重新启动 Agent 后，`/tools` 应同时显示 `web_search` 和 `read_web_page`。未配置该 Key 时两个工具都不会注册，其他离线功能不受影响。默认 `balanced` 搜索只产生一张工具卡，但会针对同一信息目标并行执行一次国内检索和一次国际检索：国内请求使用中文关键词，国际请求使用英文关键词，两路分别采用 `AGENT_WEB_SEARCH_DOMESTIC_RESULTS` 和 `AGENT_WEB_SEARCH_INTERNATIONAL_RESULTS`，模型不能自行覆盖这两个配置。如果希望进一步限制来源，可用三个 `*_DOMAINS` 配置填写可信域名或排除域名；必须只写域名，例如 `reuters.com,apnews.com`，不要填写 `https://`、路径或通配符。结果数量是期望上限；工具会在同一次请求中获取不超过两倍、且最多 10 条候选，再过滤无效 URL、搜索引擎跳转页、空标题和同域名重复结果，因此不会为凑数保留低质量来源，实际数量仍可能更少。`requested_scope` 表示请求的来源倾向，不是对网站实际地域归属的认证。用户明确限定来源、指定网站或只需要官方一手资料时，Agent 可以只执行相应范围。搜索自动额度按真实第三方请求计数，因此一次 `balanced` 会使用默认的 2 次额度；同一轮重复搜索或继续发起搜索会先显示参数并等待用户确认。
+联网搜索和正文核验分别使用 Tavily Search API 与 Extract API。先在 [Tavily 官方控制台](https://app.tavily.com) 获取 API Key，然后在 `.env` 中取消 `TAVILY_API_KEY` 的注释并替换占位值；重新启动 Agent 后，`/tools` 应同时显示 `web_search` 和 `read_web_page`。未配置该 Key 时两个工具都不会注册，其他离线功能不受影响。默认 `balanced` 搜索只产生一张工具卡，但会针对同一信息目标并行执行一次国内检索和一次国际检索：国内请求使用中文关键词，国际请求使用英文关键词，两路分别采用 `AGENT_WEB_SEARCH_DOMESTIC_RESULTS` 和 `AGENT_WEB_SEARCH_INTERNATIONAL_RESULTS`，模型不能自行覆盖这两个配置。如果希望进一步限制来源，可用三个 `*_DOMAINS` 配置填写可信域名或排除域名；必须只写域名，例如 `reuters.com,apnews.com`，不要填写 `https://`、路径或通配符。结果数量是期望上限；工具会在同一次请求中获取不超过两倍、且最多 10 条候选，再过滤无效或不安全 URL、搜索引擎跳转页、空标题、同域名重复、跨域同标题或同正文结果；`balanced` 还会移除国内和国际两路共同返回的同一 URL。带相关度分数的候选低于 `AGENT_WEB_SEARCH_MIN_SCORE` 时会被过滤；低置信度候选如果与查询缺少关键词关联也不会返回，因此系统不会为凑数保留低质量来源，实际数量可能更少。工具结果会报告候选数、质量过滤数和过滤原因。`requested_scope` 表示请求的来源倾向，不是对网站实际地域归属的认证。用户明确限定来源、指定网站或只需要官方一手资料时，Agent 可以只执行相应范围。搜索自动额度按真实第三方请求计数，因此一次 `balanced` 会使用默认的 2 次额度；同一轮重复搜索或继续发起搜索会先显示参数并等待用户确认。
 
-`web_search` 固定使用基础搜索，只返回搜索服务提供的标题、直接来源 URL 和索引摘要，不把摘要冒充网页正文。需要回答重要事实或判断具体页面内容时，Agent 会从候选结果中选择 2 到 4 个高质量来源，并用 `read_web_page` 一次批量提取与核对问题相关的正文片段。页面读取成功只代表已经取得该页面内容，不自动证明其陈述真实；重要结论仍需比较相互独立的来源。每轮默认可自动读取 4 页，重复 URL 或超过额度后才显示确认窗口。工具拒绝本机、内网、保留地址、非标准端口、搜索引擎跳转页、配置中排除的域名，以及疑似携带访问凭据的 URL。读取失败、部分失败或正文不支持搜索摘要时，Agent 应明确说明而不能声称已经核实。搜索词、核对问题和 URL 都会发送给第三方服务，请勿放入 API Key、Token、密码、个人隐私或工作区敏感内容。
+`web_search` 固定使用基础搜索，只返回搜索服务提供的标题、直接来源 URL 和索引摘要，不把摘要冒充网页正文。每条搜索结果都有根据规范 URL 生成的稳定 `source_id`；`read_web_page` 会返回对应的 `verified_source_ids` 和 `failed_source_ids`，使模型能够区分正文读取成功、读取失败和仅搜索到的来源。需要回答重要事实或判断具体页面内容时，Agent 会从候选结果中选择 2 到 4 个高质量来源，并用 `read_web_page` 一次批量提取与核对问题相关的正文片段。页面读取成功只代表已经取得该页面内容，不自动证明其陈述真实；重要结论仍需比较相互独立的来源。每轮默认可自动读取 4 页，重复 URL 或超过额度后才显示确认窗口。两个工具使用相同的 URL 边界，拒绝本机、内网、保留地址、非标准端口、搜索引擎跳转页、配置中排除的域名，以及疑似携带访问凭据的 URL。第三方响应中的异常 URL、敏感错误信息和超长元数据不会直接进入模型上下文。读取失败、部分失败或正文不支持搜索摘要时，Agent 应明确说明而不能声称已经核实。搜索词、核对问题和 URL 都会发送给第三方服务，请勿放入 API Key、Token、密码、个人隐私或工作区敏感内容。
 
 `AGENT_WORKSPACE` 是文件工具唯一允许访问的根目录，默认是项目根目录；`AGENT_MAX_FILE_SIZE` 控制单次读取或写入的最大字节数，默认 `100000`。
 

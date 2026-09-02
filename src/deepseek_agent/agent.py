@@ -142,6 +142,7 @@ class Agent:
                 web_search_api_key=settings.tavily_api_key,
                 web_search_timeout=settings.web_search_timeout,
                 web_search_max_results=settings.web_search_max_results,
+                web_search_min_score=settings.web_search_min_score,
                 web_search_auto_calls_per_turn=(
                     settings.web_search_auto_calls_per_turn
                 ),

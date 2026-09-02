@@ -70,17 +70,38 @@ class ParallelTransport:
         if query in self._failing_queries:
             raise URLError("simulated failure")
         slug = "domestic" if query == "人工智能进展" else "international"
+        hostname = "gov.cn" if slug == "domestic" else "reuters.com"
         return json.dumps(
             {
                 "results": [
                     {
                         "title": f"{slug} source",
-                        "url": f"https://{slug}.example.org/article",
+                        "url": f"https://{hostname}/article",
                         "content": "summary",
                     }
                 ]
             }
         ).encode("utf-8")
+
+
+class QueryResponseTransport:
+    """按查询返回不同响应，用于验证 balanced 汇总边界。"""
+
+    def __init__(self, responses: Mapping[str, object]) -> None:
+        self._responses = responses
+        self.calls: list[dict[str, object]] = []
+
+    def __call__(
+        self,
+        body: bytes,
+        headers: Mapping[str, str],
+        timeout_seconds: float,
+    ) -> bytes:
+        del headers, timeout_seconds
+        request = json.loads(body.decode("utf-8"))
+        self.calls.append(request)
+        response = self._responses[str(request["query"])]
+        return json.dumps(response, ensure_ascii=False).encode("utf-8")
 
 
 class RejectingConfirmer:
@@ -100,6 +121,7 @@ class WebSearchToolTests(unittest.TestCase):
         *,
         timeout_seconds: float = 20,
         default_max_results: int = 5,
+        minimum_score: float = 0.25,
         auto_calls_per_turn: int = 2,
         default_scope: str = "balanced",
         domestic_results: int = 3,
@@ -114,6 +136,7 @@ class WebSearchToolTests(unittest.TestCase):
             "unused-because-client-is-injected",
             timeout_seconds=timeout_seconds,
             default_max_results=default_max_results,
+            minimum_score=minimum_score,
             auto_calls_per_turn=auto_calls_per_turn,
             default_scope=default_scope,
             domestic_results=domestic_results,
@@ -182,7 +205,13 @@ class WebSearchToolTests(unittest.TestCase):
         self.assertEqual(result["requested_scope"], "unrestricted")
         self.assertEqual(result["provider_request_count"], 1)
         self.assertEqual(result["result_limit"], 2)
+        self.assertEqual(result["candidate_count"], 5)
         self.assertEqual(result["result_count"], 2)
+        self.assertEqual(result["minimum_score"], 0.25)
+        self.assertEqual(result["quality_filtered_count"], 3)
+        self.assertEqual(result["quality_filter_reasons"]["invalid_url"], 1)
+        self.assertEqual(result["quality_filter_reasons"]["duplicate_domain"], 1)
+        self.assertEqual(result["quality_filter_reasons"]["search_redirect"], 1)
         self.assertEqual(len(result["results"][0]["content"]), 1_500)
         self.assertEqual(result["results"][0]["score"], 0.987654)
         self.assertEqual(result["results"][1]["url"], "http://example.org/second")
@@ -201,6 +230,329 @@ class WebSearchToolTests(unittest.TestCase):
         self.assertFalse(request["include_images"])
         self.assertEqual(headers["Authorization"], "Bearer tvly-private-test-key")
         self.assertEqual(timeout, 20)
+
+    def test_quality_gate_filters_low_relevance_and_cross_domain_duplicates(
+        self,
+    ) -> None:
+        repeated_content = (
+            "DeepSeek released the same model update with verified details. " * 3
+        )
+        transport = RecordingTransport(
+            {
+                "results": [
+                    {
+                        "title": "DeepSeek model release",
+                        "url": "https://official.example.com/release",
+                        "content": repeated_content,
+                        "score": 0.92,
+                    },
+                    {
+                        "title": "Unrelated low score",
+                        "url": "https://low.example.net/story",
+                        "content": "unrelated",
+                        "score": 0.1,
+                    },
+                    {
+                        "title": "Football results",
+                        "url": "https://sports.example.org/table",
+                        "content": "Scores and league standings from this weekend.",
+                        "score": 0.4,
+                    },
+                    {
+                        "title": "DeepSeek model release",
+                        "url": "https://mirror.example.net/copy",
+                        "content": "A mirrored report.",
+                        "score": 0.8,
+                    },
+                    {
+                        "title": "Syndicated model story",
+                        "url": "https://syndicated.example.org/copy",
+                        "content": repeated_content,
+                        "score": 0.8,
+                    },
+                    {
+                        "title": "DeepSeek developer analysis",
+                        "url": "https://analysis.example.edu/article",
+                        "content": "Independent DeepSeek release analysis.",
+                        "score": 0.75,
+                    },
+                ]
+            }
+        )
+
+        result = json.loads(
+            self.build_tool(transport).execute(
+                {
+                    "query": "DeepSeek latest model release",
+                    "scope": "international",
+                }
+            )
+        )
+
+        self.assertEqual(result["candidate_count"], 6)
+        self.assertEqual(result["result_count"], 2)
+        self.assertEqual(result["quality_filtered_count"], 4)
+        self.assertTrue(result["quality_limited"])
+        self.assertEqual(
+            result["quality_filter_reasons"],
+            {
+                "low_score": 1,
+                "weak_query_match": 1,
+                "duplicate_title": 1,
+                "duplicate_content": 1,
+            },
+        )
+        self.assertEqual(
+            [item["url"] for item in result["results"]],
+            [
+                "https://official.example.com/release",
+                "https://analysis.example.edu/article",
+            ],
+        )
+
+    def test_quality_gate_can_be_relaxed_and_rejects_invalid_scores(self) -> None:
+        transport = RecordingTransport(
+            {
+                "results": [
+                    {
+                        "title": "Low scored but retained",
+                        "url": "https://example.com/low",
+                        "content": "DeepSeek release",
+                        "score": 0.05,
+                    },
+                    {
+                        "title": "Invalid score",
+                        "url": "https://example.org/invalid",
+                        "content": "DeepSeek release",
+                        "score": 1.5,
+                    },
+                ]
+            }
+        )
+
+        result = json.loads(
+            self.build_tool(transport, minimum_score=0).execute(
+                {
+                    "query": "DeepSeek release",
+                    "scope": "unrestricted",
+                    "max_results": 2,
+                }
+            )
+        )
+
+        self.assertEqual(result["result_count"], 1)
+        self.assertEqual(result["results"][0]["score"], 0.05)
+        self.assertEqual(result["quality_filter_reasons"], {"invalid_score": 1})
+
+    def test_provider_urls_are_normalized_and_unsafe_candidates_are_filtered(
+        self,
+    ) -> None:
+        transport = RecordingTransport(
+            {
+                "results": [
+                    {
+                        "title": "Canonical source",
+                        "url": "HTTPS://Example.COM:443/article#section",
+                        "content": "DeepSeek release",
+                    },
+                    {
+                        "title": "Local service",
+                        "url": "http://127.0.0.1/private",
+                    },
+                    {
+                        "title": "Credential authority",
+                        "url": "https://user:password@example.org/private",
+                    },
+                    {
+                        "title": "Credential query",
+                        "url": (
+                            "https://news.example.net/report?"
+                            "access_token=very-secret-value"
+                        ),
+                    },
+                    {
+                        "title": "Nonstandard port",
+                        "url": "https://service.example.edu:8443/report",
+                    },
+                    {
+                        "title": "Bing redirect",
+                        "url": "https://www.bing.com/ck/a?target=example",
+                    },
+                ]
+            }
+        )
+
+        result = json.loads(
+            self.build_tool(transport).execute(
+                {
+                    "query": "DeepSeek release",
+                    "scope": "unrestricted",
+                    "max_results": 5,
+                }
+            )
+        )
+
+        self.assertEqual(result["result_count"], 1)
+        self.assertEqual(result["results"][0]["url"], "https://example.com/article")
+        self.assertRegex(result["results"][0]["source_id"], r"^src_[0-9a-f]{12}$")
+        self.assertEqual(
+            result["quality_filter_reasons"],
+            {"unsafe_url": 4, "search_redirect": 1},
+        )
+        self.assertNotIn("very-secret-value", json.dumps(result))
+
+    def test_balanced_search_deduplicates_the_same_source_across_scopes(
+        self,
+    ) -> None:
+        shared = {
+            "title": "Shared source",
+            "url": "https://shared.example.com/report#top",
+            "content": "shared",
+        }
+        transport = QueryResponseTransport(
+            {
+                "人工智能进展": {
+                    "results": [
+                        shared,
+                        {
+                            "title": "Domestic source",
+                            "url": "https://domestic.example.cn/report",
+                            "content": "domestic",
+                        },
+                    ]
+                },
+                "artificial intelligence progress": {
+                    "results": [
+                        {**shared, "url": "https://shared.example.com/report"},
+                        {
+                            "title": "International source",
+                            "url": "https://international.example.org/report",
+                            "content": "international",
+                        },
+                    ]
+                },
+            }
+        )
+        client = TavilySearchClient("tvly-private-test-key", transport=transport)
+        tool = WebSearchTool(
+            "unused-because-client-is-injected",
+            client=client,
+        )
+
+        result = json.loads(
+            tool.execute(
+                {
+                    "query": "人工智能进展",
+                    "international_query": "artificial intelligence progress",
+                    "scope": "balanced",
+                }
+            )
+        )
+
+        self.assertEqual(list(result["groups"]), ["domestic", "international"])
+        self.assertEqual(result["result_count"], 3)
+        self.assertEqual(result["cross_scope_duplicate_count"], 1)
+        self.assertEqual(result["quality_filtered_count"], 1)
+        self.assertEqual(result["groups"]["international"]["result_count"], 1)
+        self.assertEqual(
+            result["groups"]["international"]["quality_filter_reasons"],
+            {"cross_scope_duplicate": 1},
+        )
+
+    def test_domestic_quality_gate_removes_observed_off_topic_results(self) -> None:
+        transport = RecordingTransport(
+            {
+                "results": [
+                    {
+                        "title": "K-Dramas To Watch This Month",
+                        "url": "https://entertainment.example.com/kdramas",
+                        "content": "A packed slate of Korean television dramas.",
+                        "score": 0.36,
+                    },
+                    {
+                        "title": "2026 夏季恋爱动画一览",
+                        "url": "https://anime.example.org/summer",
+                        "content": "整理本季新番中的恋爱动画和恋爱喜剧作品。",
+                        "score": 0.34,
+                    },
+                    {
+                        "title": "Fantasy Football Rankings",
+                        "url": "https://sports.example.net/rankings",
+                        "content": "Rookie player rankings.",
+                        "score": 0.1,
+                    },
+                ]
+            }
+        )
+
+        result = json.loads(
+            self.build_tool(transport).execute(
+                {
+                    "query": "2026年夏季新番 恋爱动画推荐",
+                    "scope": "domestic",
+                }
+            )
+        )
+
+        self.assertEqual(result["result_count"], 1)
+        self.assertEqual(
+            result["results"][0]["url"],
+            "https://anime.example.org/summer",
+        )
+        self.assertEqual(
+            result["quality_filter_reasons"],
+            {"weak_query_match": 1, "low_score": 1},
+        )
+
+    def test_configured_domain_filters_are_enforced_on_provider_results(self) -> None:
+        transport = RecordingTransport(
+            {
+                "results": [
+                    {
+                        "title": "Trusted source",
+                        "url": "https://news.trusted.example/article",
+                        "content": "人工智能进展",
+                        "score": 0.9,
+                    },
+                    {
+                        "title": "Provider ignored allowlist",
+                        "url": "https://other.example/article",
+                        "content": "人工智能进展",
+                        "score": 0.9,
+                    },
+                    {
+                        "title": "Explicitly blocked",
+                        "url": "https://blocked.example/article",
+                        "content": "人工智能进展",
+                        "score": 0.9,
+                    },
+                ]
+            }
+        )
+        tool = self.build_tool(
+            transport,
+            domestic_domains=("trusted.example",),
+            excluded_domains=("blocked.example",),
+        )
+
+        result = json.loads(
+            tool.execute(
+                {
+                    "query": "人工智能进展",
+                    "scope": "domestic",
+                }
+            )
+        )
+
+        self.assertEqual(result["result_count"], 1)
+        self.assertEqual(
+            result["results"][0]["url"],
+            "https://news.trusted.example/article",
+        )
+        self.assertEqual(
+            result["quality_filter_reasons"],
+            {"outside_allowed_domains": 1, "excluded_domain": 1},
+        )
 
     def test_default_result_limit_and_deadline_are_propagated(self) -> None:
         transport = RecordingTransport()
@@ -684,6 +1036,10 @@ class WebSearchToolTests(unittest.TestCase):
     def test_scope_configuration_must_be_valid(self) -> None:
         cases = (
             ({"default_scope": "worldwide"}, "default_scope"),
+            ({"minimum_score": -0.1}, "minimum_score"),
+            ({"minimum_score": 1.1}, "minimum_score"),
+            ({"minimum_score": float("nan")}, "minimum_score"),
+            ({"minimum_score": True}, "minimum_score"),
             ({"domestic_results": 0}, "domestic_results"),
             ({"international_results": 11}, "international_results"),
             ({"domestic_domains": ("https://example.com",)}, "domestic_domains"),

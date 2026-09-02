@@ -17,6 +17,7 @@ from deepseek_agent.tools import (
     ToolExecutionError,
     build_default_registry,
 )
+from deepseek_agent.tools.web_sources import source_id_for_url
 
 
 class RecordingExtractTransport:
@@ -202,6 +203,66 @@ class ReadWebPageToolTests(unittest.TestCase):
         self.assertTrue(result["pages"][0]["redirected"])
         self.assertIn("不属于请求域名", result["failures"][0]["error"])
         self.assertNotIn("unrequested content", json.dumps(result))
+
+    def test_source_ids_link_requested_pages_and_sanitize_provider_failures(
+        self,
+    ) -> None:
+        transport = RecordingExtractTransport(
+            {
+                "request_id": "request-" + "x" * 500,
+                "response_time": float("nan"),
+                "results": [
+                    {
+                        "url": "https://official.example.com/article",
+                        "raw_content": "verified content",
+                    }
+                ],
+                "failed_results": [
+                    {
+                        "url": (
+                            "https://evil.example.net/report?"
+                            "access_token=very-secret-value"
+                        ),
+                        "error": "unexpected",
+                    },
+                    {
+                        "url": "https://news.example.org/report",
+                        "error": "password=provider-returned-secret-value",
+                    },
+                ],
+            }
+        )
+        tool = self.build_tool(transport)
+        official_url = "https://official.example.com/article"
+        failed_url = "https://news.example.org/report"
+
+        result = json.loads(
+            tool.execute(
+                {
+                    "urls": [official_url, failed_url],
+                    "question": "核对发布状态",
+                }
+            )
+        )
+
+        official_source_id = source_id_for_url(official_url)
+        failed_source_id = source_id_for_url(failed_url)
+        self.assertEqual(result["pages"][0]["source_id"], official_source_id)
+        self.assertEqual(result["verified_source_ids"], [official_source_id])
+        self.assertEqual(result["failed_source_ids"], [failed_source_id])
+        self.assertEqual(
+            result["requested_sources"],
+            [
+                {"source_id": official_source_id, "url": official_url},
+                {"source_id": failed_source_id, "url": failed_url},
+            ],
+        )
+        serialized = json.dumps(result, ensure_ascii=False)
+        self.assertNotIn("very-secret-value", serialized)
+        self.assertNotIn("provider-returned-secret-value", serialized)
+        self.assertNotIn("evil.example.net", serialized)
+        self.assertNotIn("response_time", result)
+        self.assertEqual(len(result["request_id"]), 200)
 
     def test_all_failed_and_malformed_responses_are_visible_errors(self) -> None:
         failed_transport = RecordingExtractTransport(

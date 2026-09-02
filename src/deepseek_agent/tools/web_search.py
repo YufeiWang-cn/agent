@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from urllib.error import HTTPError, URLError
-from urllib.parse import SplitResult, urlsplit
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from ..timekeeping import now_china
@@ -20,18 +21,27 @@ from .base import (
     ToolExecutionContext,
     ToolExecutionError,
 )
+from .web_sources import (
+    PublicWebUrlError,
+    normalize_public_web_url,
+    source_id_for_url,
+)
 
 
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 DEFAULT_SEARCH_TIMEOUT_SECONDS = 20.0
 DEFAULT_MAX_RESULTS = 5
+DEFAULT_MINIMUM_SCORE = 0.25
 MAX_RESULTS = 10
 MAX_AUTO_CALLS_PER_TURN = 5
 MAX_QUERY_LENGTH = 400
 MAX_CONFIGURED_DOMAINS = 50
 MAX_RESULT_TITLE_LENGTH = 300
 MAX_RESULT_CONTENT_LENGTH = 1_500
+MAX_PUBLISHED_DATE_LENGTH = 100
+MAX_PROVIDER_ID_LENGTH = 200
 MAX_RESPONSE_BYTES = 1_000_000
+WEAK_MATCH_SCORE_THRESHOLD = 0.5
 SUPPORTED_TOPICS = frozenset({"general", "news", "finance"})
 SUPPORTED_TIME_RANGES = frozenset({"day", "week", "month", "year"})
 SUPPORTED_SEARCH_SCOPES = frozenset(
@@ -73,6 +83,53 @@ PLACEHOLDER_MARKERS = (
     "sample",
     "your_",
     "your-",
+)
+LATIN_QUERY_TOKEN_PATTERN = re.compile(r"[a-z][a-z0-9.+#-]{2,}", re.IGNORECASE)
+CJK_QUERY_RUN_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]{2,}")
+ENGLISH_QUERY_STOP_WORDS = frozenset(
+    {
+        "about",
+        "best",
+        "current",
+        "find",
+        "latest",
+        "month",
+        "news",
+        "recent",
+        "recommend",
+        "recommendation",
+        "search",
+        "this",
+        "today",
+        "update",
+        "what",
+        "when",
+        "where",
+        "which",
+    }
+)
+CJK_QUERY_STOP_BIGRAMS = frozenset(
+    {
+        "今天",
+        "今日",
+        "什么",
+        "介绍",
+        "值得",
+        "信息",
+        "关于",
+        "动态",
+        "如何",
+        "推荐",
+        "搜索",
+        "新闻",
+        "最新",
+        "本周",
+        "本月",
+        "消息",
+        "现在",
+        "目前",
+        "近期",
+    }
 )
 
 SearchTransport = Callable[[bytes, Mapping[str, str], float], bytes]
@@ -259,6 +316,7 @@ class WebSearchTool(Tool):
         *,
         timeout_seconds: float = DEFAULT_SEARCH_TIMEOUT_SECONDS,
         default_max_results: int = DEFAULT_MAX_RESULTS,
+        minimum_score: float = DEFAULT_MINIMUM_SCORE,
         auto_calls_per_turn: int = 2,
         default_scope: str = "balanced",
         domestic_results: int = 3,
@@ -273,6 +331,13 @@ class WebSearchTool(Tool):
             raise ValueError("timeout_seconds 必须大于 0。")
         if not 1 <= default_max_results <= MAX_RESULTS:
             raise ValueError(f"default_max_results 必须在 1 到 {MAX_RESULTS} 之间。")
+        if (
+            not isinstance(minimum_score, (int, float))
+            or isinstance(minimum_score, bool)
+            or not math.isfinite(float(minimum_score))
+            or not 0 <= float(minimum_score) <= 1
+        ):
+            raise ValueError("minimum_score 必须是 0 到 1 之间的有限数字。")
         if default_scope not in SUPPORTED_SEARCH_SCOPES:
             choices = "、".join(sorted(SUPPORTED_SEARCH_SCOPES))
             raise ValueError(f"default_scope 只能是：{choices}。")
@@ -297,6 +362,7 @@ class WebSearchTool(Tool):
             )
         self.timeout_seconds = timeout_seconds
         self._default_max_results = default_max_results
+        self._minimum_score = float(minimum_score)
         self._auto_calls_per_turn = auto_calls_per_turn
         self._default_scope = default_scope
         self._now_provider = now_provider
@@ -464,8 +530,24 @@ class WebSearchTool(Tool):
                 f"{scope}: {message}" for scope, message in sorted(errors.items())
             )
             raise ToolExecutionError(f"国内和国际联网搜索均失败。{details}")
+        groups = {
+            scope: groups[scope]
+            for scope in ("domestic", "international")
+            if scope in groups
+        }
+        cross_scope_duplicate_count = self._deduplicate_balanced_groups(groups)
         result_count = sum(
             int(group.get("result_count", 0))
+            for group in groups.values()
+            if isinstance(group, dict)
+        )
+        quality_filtered_count = sum(
+            int(group.get("quality_filtered_count", 0))
+            for group in groups.values()
+            if isinstance(group, dict)
+        )
+        limit_discarded_count = sum(
+            int(group.get("limit_discarded_count", 0))
             for group in groups.values()
             if isinstance(group, dict)
         )
@@ -482,6 +564,9 @@ class WebSearchTool(Tool):
             "time_range": arguments.time_range,
             "provider_request_count": 2,
             "result_count": result_count,
+            "quality_filtered_count": quality_filtered_count,
+            "cross_scope_duplicate_count": cross_scope_duplicate_count,
+            "limit_discarded_count": limit_discarded_count,
             "groups": groups,
             "partial_failure": bool(errors),
         }
@@ -655,6 +740,7 @@ class WebSearchTool(Tool):
             )
         return (
             "搜索公开互联网中的当前信息，返回标题、来源 URL 和相关摘要。"
+            "每条结果带有稳定 source_id，后续正文读取会沿用该标识。"
             "这些摘要不是网页正文；除非用户只需要候选链接，否则重要事实应继续"
             "使用 read_web_page 读取并比较具体来源。"
             f"{scope_instruction}"
@@ -664,6 +750,8 @@ class WebSearchTool(Tool):
             "以来源质量为先，结果不足时不要用低质量来源凑数。"
             "scope 表示请求意图，不代表搜索服务已证明每个来源的地域归属。"
             "查询会发送给第三方搜索服务，不得包含 API Key、密码或隐私数据。"
+            f"相关度低于 {self._minimum_score:g} 的结果会被过滤；"
+            "低置信度且与查询缺少关键词关联的结果也不会返回。"
         )
 
     @staticmethod
@@ -726,8 +814,8 @@ class WebSearchTool(Tool):
         if context.cancellation_requested:
             raise ToolExecutionError("联网搜索已取消。")
 
-    @staticmethod
     def _normalize_response(
+        self,
         response: JsonObject,
         *,
         query: str,
@@ -742,50 +830,103 @@ class WebSearchTool(Tool):
 
         results: list[JsonObject] = []
         seen_domains: set[str] = set()
+        seen_titles: set[str] = set()
+        seen_contents: set[str] = set()
+        filter_reasons: dict[str, int] = {}
+        limit_discarded_count = 0
+        query_anchors = self._query_anchors(query)
+
+        def reject(reason: str) -> None:
+            filter_reasons[reason] = filter_reasons.get(reason, 0) + 1
+
         for item in raw_results:
             if not isinstance(item, dict):
+                reject("invalid_item")
                 continue
             title = item.get("title")
             url = item.get("url")
             content = item.get("content", "")
             if not isinstance(title, str) or not isinstance(url, str):
+                reject("invalid_title_or_url")
                 continue
-            parsed_url = urlsplit(url)
-            hostname = parsed_url.hostname
-            if (
-                parsed_url.scheme not in {"http", "https"}
-                or not parsed_url.netloc
-                or hostname is None
+            try:
+                normalized_url = normalize_public_web_url(
+                    url,
+                    excluded_domains=self._excluded_domains,
+                )
+            except PublicWebUrlError as error:
+                reject(self._url_filter_reason(error.reason))
+                continue
+            normalized_hostname = (
+                urlsplit(normalized_url).hostname or ""
+            ).casefold().removeprefix("www.")
+            allowed_domains = self._allowed_domains_for_scope(requested_scope)
+            if allowed_domains and not self._hostname_matches_any(
+                normalized_hostname,
+                allowed_domains,
             ):
+                reject("outside_allowed_domains")
                 continue
-            if WebSearchTool._is_search_redirect(parsed_url):
-                continue
-            normalized_hostname = hostname.casefold().removeprefix("www.")
             if normalized_hostname in seen_domains:
+                reject("duplicate_domain")
                 continue
             normalized_title = title.strip()
             if not normalized_title:
+                reject("empty_title")
                 continue
-            seen_domains.add(normalized_hostname)
+            normalized_content = content.strip() if isinstance(content, str) else ""
+            score_value = self._valid_score(item.get("score"))
+            if score_value is None and item.get("score") is not None:
+                reject("invalid_score")
+                continue
+            if score_value is not None and score_value < self._minimum_score:
+                reject("low_score")
+                continue
+            if (
+                score_value is not None
+                and score_value < WEAK_MATCH_SCORE_THRESHOLD
+                and requested_scope != "unrestricted"
+                and query_anchors
+                and not self._has_query_anchor(
+                    query_anchors,
+                    f"{normalized_title}\n{normalized_content}",
+                )
+            ):
+                reject("weak_query_match")
+                continue
+            title_signature = self._text_signature(normalized_title)
+            if title_signature and title_signature in seen_titles:
+                reject("duplicate_title")
+                continue
+            content_signature = self._text_signature(normalized_content)
+            if len(content_signature) >= 80 and content_signature in seen_contents:
+                reject("duplicate_content")
+                continue
+            if len(results) >= max_results:
+                limit_discarded_count += 1
+                continue
+
             normalized: JsonObject = {
+                "source_id": source_id_for_url(normalized_url),
                 "title": normalized_title[:MAX_RESULT_TITLE_LENGTH],
-                "url": url,
-                "content": (
-                    content.strip()[:MAX_RESULT_CONTENT_LENGTH]
-                    if isinstance(content, str)
-                    else ""
-                ),
+                "url": normalized_url,
+                "content": normalized_content[:MAX_RESULT_CONTENT_LENGTH],
             }
-            score = item.get("score")
-            if isinstance(score, (int, float)) and not isinstance(score, bool):
-                normalized["score"] = round(float(score), 6)
+            if score_value is not None:
+                normalized["score"] = round(score_value, 6)
             published_date = item.get("published_date")
             if isinstance(published_date, str) and published_date.strip():
-                normalized["published_date"] = published_date.strip()
+                normalized["published_date"] = published_date.strip()[
+                    :MAX_PUBLISHED_DATE_LENGTH
+                ]
             results.append(normalized)
-            if len(results) >= max_results:
-                break
+            seen_domains.add(normalized_hostname)
+            if title_signature:
+                seen_titles.add(title_signature)
+            if len(content_signature) >= 80:
+                seen_contents.add(content_signature)
 
+        quality_filtered_count = sum(filter_reasons.values())
         payload: JsonObject = {
             "provider": "tavily",
             "query": query,
@@ -795,30 +936,133 @@ class WebSearchTool(Tool):
             "topic": topic,
             "time_range": time_range,
             "result_limit": max_results,
+            "candidate_count": len(raw_results),
             "result_count": len(results),
+            "minimum_score": self._minimum_score,
+            "quality_filtered_count": quality_filtered_count,
+            "quality_filter_reasons": filter_reasons,
+            "limit_discarded_count": limit_discarded_count,
+            "quality_limited": (
+                len(results) < max_results and quality_filtered_count > 0
+            ),
             "results": results,
         }
         response_time = response.get("response_time")
         if isinstance(response_time, (int, float)) and not isinstance(
             response_time, bool
-        ):
+        ) and math.isfinite(float(response_time)):
             payload["response_time"] = float(response_time)
         request_id = response.get("request_id")
         if isinstance(request_id, str) and request_id.strip():
-            payload["request_id"] = request_id.strip()
+            payload["request_id"] = request_id.strip()[:MAX_PROVIDER_ID_LENGTH]
         return payload
 
     @staticmethod
-    def _is_search_redirect(parsed_url: SplitResult) -> bool:
-        """过滤搜索引擎跳转页，但不屏蔽对应公司的正常内容页面。"""
-        hostname = (parsed_url.hostname or "").casefold()
-        path = parsed_url.path.rstrip("/").casefold()
-        is_google = hostname.startswith("google.") or ".google." in hostname
-        return is_google and path in {"/url", "/goto"}
+    def _valid_score(value: object) -> float | None:
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return None
+        score = float(value)
+        if not math.isfinite(score) or not 0 <= score <= 1:
+            return None
+        return score
+
+    @staticmethod
+    def _text_signature(value: str) -> str:
+        return re.sub(r"[\W_]+", "", value.casefold(), flags=re.UNICODE)
+
+    @staticmethod
+    def _query_anchors(query: str) -> tuple[str, ...]:
+        anchors: list[str] = []
+        seen: set[str] = set()
+        for match in LATIN_QUERY_TOKEN_PATTERN.finditer(query.casefold()):
+            token = match.group(0)
+            if token not in ENGLISH_QUERY_STOP_WORDS and token not in seen:
+                anchors.append(token)
+                seen.add(token)
+        for match in CJK_QUERY_RUN_PATTERN.finditer(query):
+            run = match.group(0)
+            for index in range(len(run) - 1):
+                token = run[index : index + 2]
+                if token not in CJK_QUERY_STOP_BIGRAMS and token not in seen:
+                    anchors.append(token)
+                    seen.add(token)
+        return tuple(anchors)
+
+    @staticmethod
+    def _has_query_anchor(anchors: Sequence[str], content: str) -> bool:
+        normalized_content = content.casefold()
+        return any(anchor in normalized_content for anchor in anchors)
+
+    def _allowed_domains_for_scope(self, scope: str) -> tuple[str, ...]:
+        if scope == "domestic":
+            return self._domestic_domains
+        if scope == "international":
+            return self._international_domains
+        return ()
+
+    @staticmethod
+    def _hostname_matches_any(hostname: str, domains: Sequence[str]) -> bool:
+        return any(
+            hostname == domain or hostname.endswith(f".{domain}")
+            for domain in domains
+        )
+
+    @staticmethod
+    def _url_filter_reason(reason: str) -> str:
+        if reason in {"search_redirect", "excluded_domain"}:
+            return reason
+        if reason in {"credential_url", "non_public_host", "nonstandard_port"}:
+            return "unsafe_url"
+        return "invalid_url"
+
+    @staticmethod
+    def _deduplicate_balanced_groups(groups: JsonObject) -> int:
+        """按固定范围顺序移除两路搜索共同返回的同一规范 URL。"""
+        seen_source_ids: set[str] = set()
+        duplicate_count = 0
+        for scope in ("domestic", "international"):
+            group = groups.get(scope)
+            if not isinstance(group, dict):
+                continue
+            raw_results = group.get("results")
+            if not isinstance(raw_results, list):
+                continue
+            retained: list[JsonObject] = []
+            removed = 0
+            for result in raw_results:
+                if not isinstance(result, dict):
+                    continue
+                source_id = result.get("source_id")
+                if isinstance(source_id, str) and source_id in seen_source_ids:
+                    removed += 1
+                    continue
+                retained.append(result)
+                if isinstance(source_id, str):
+                    seen_source_ids.add(source_id)
+            if not removed:
+                continue
+            duplicate_count += removed
+            group["results"] = retained
+            group["result_count"] = len(retained)
+            reasons = group.get("quality_filter_reasons")
+            if not isinstance(reasons, dict):
+                reasons = {}
+                group["quality_filter_reasons"] = reasons
+            reasons["cross_scope_duplicate"] = removed
+            previous_filtered = group.get("quality_filtered_count", 0)
+            group["quality_filtered_count"] = (
+                previous_filtered + removed
+                if isinstance(previous_filtered, int)
+                and not isinstance(previous_filtered, bool)
+                else removed
+            )
+            group["quality_limited"] = True
+        return duplicate_count
 
 
 __all__ = [
     "DEFAULT_MAX_RESULTS",
+    "DEFAULT_MINIMUM_SCORE",
     "DEFAULT_SEARCH_TIMEOUT_SECONDS",
     "MAX_RESULTS",
     "TavilySearchClient",

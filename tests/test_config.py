@@ -38,6 +38,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.command_container_image, "example/python:test")
         self.assertEqual(settings.workspace_root, Path(temporary_directory).resolve())
         self.assertEqual(settings.web_search_default_scope, "balanced")
+        self.assertEqual(settings.web_search_min_score, 0.25)
         self.assertEqual(settings.web_search_domestic_results, 3)
         self.assertEqual(settings.web_search_international_results, 3)
         self.assertEqual(settings.web_search_domestic_domains, ())
@@ -73,6 +74,7 @@ class SettingsTests(unittest.TestCase):
             "TAVILY_API_KEY": "tvly-real-key",
             "AGENT_WEB_SEARCH_TIMEOUT": "12.5",
             "AGENT_WEB_SEARCH_MAX_RESULTS": "7",
+            "AGENT_WEB_SEARCH_MIN_SCORE": "0.4",
             "AGENT_WEB_SEARCH_AUTO_CALLS_PER_TURN": "3",
             "AGENT_WEB_SEARCH_DEFAULT_SCOPE": "international",
             "AGENT_WEB_SEARCH_DOMESTIC_RESULTS": "2",
@@ -94,6 +96,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.tavily_api_key, "tvly-real-key")
         self.assertEqual(settings.web_search_timeout, 12.5)
         self.assertEqual(settings.web_search_max_results, 7)
+        self.assertEqual(settings.web_search_min_score, 0.4)
         self.assertEqual(settings.web_search_auto_calls_per_turn, 3)
         self.assertEqual(settings.web_search_default_scope, "international")
         self.assertEqual(settings.web_search_domestic_results, 2)
@@ -136,6 +139,20 @@ class SettingsTests(unittest.TestCase):
                     "AGENT_WEB_SEARCH_AUTO_CALLS_PER_TURN": "6",
                 },
                 "不能大于 5",
+            ),
+            (
+                {
+                    "DEEPSEEK_API_KEY": "test-key",
+                    "AGENT_WEB_SEARCH_MIN_SCORE": "1.1",
+                },
+                "AGENT_WEB_SEARCH_MIN_SCORE",
+            ),
+            (
+                {
+                    "DEEPSEEK_API_KEY": "test-key",
+                    "AGENT_WEB_SEARCH_MIN_SCORE": "nan",
+                },
+                "AGENT_WEB_SEARCH_MIN_SCORE",
             ),
             (
                 {

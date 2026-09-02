@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import ipaddress
 import json
+import math
 import re
-from copy import deepcopy
 from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qsl, urlsplit, urlunsplit
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from .base import (
@@ -18,6 +18,11 @@ from .base import (
     ToolEffect,
     ToolExecutionContext,
     ToolExecutionError,
+)
+from .web_sources import (
+    PublicWebUrlError,
+    normalize_public_web_url,
+    source_id_for_url,
 )
 
 
@@ -32,22 +37,10 @@ MAX_AUTO_PAGES_PER_TURN = 12
 MAX_CHUNKS_PER_SOURCE = 5
 MAX_CONTENT_CHARS = 20_000
 MAX_QUESTION_LENGTH = 400
-MAX_URL_LENGTH = 2_048
 MAX_ERROR_LENGTH = 500
+MAX_PROVIDER_ID_LENGTH = 200
 MAX_RESPONSE_BYTES = 2_000_000
 SUPPORTED_EXTRACT_DEPTHS = frozenset({"basic", "advanced"})
-BLOCKED_HOST_SUFFIXES = (
-    ".internal",
-    ".lan",
-    ".local",
-    ".localhost",
-    ".home",
-)
-SENSITIVE_QUERY_NAME_PATTERN = re.compile(
-    r"(?:^|[_-])(?:api[_-]?key|access[_-]?token|auth|authorization|credential|"
-    r"password|passwd|secret|signature|sig)(?:$|[_-])",
-    re.IGNORECASE,
-)
 SECRET_VALUE_PATTERN = re.compile(
     r"(?:\b(?:sk|tvly)-[A-Za-z0-9_-]{12,}\b|"
     r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----)",
@@ -67,12 +60,6 @@ PLACEHOLDER_MARKERS = (
     "your_",
     "your-",
 )
-HOST_PATTERN = re.compile(
-    r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
-    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z",
-    re.IGNORECASE,
-)
-
 ExtractTransport = Callable[[bytes, Mapping[str, str], float], bytes]
 
 
@@ -185,7 +172,7 @@ class ReadWebPageTool(Tool):
                 "items": {
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": MAX_URL_LENGTH,
+                    "maxLength": 2_048,
                 },
                 "description": (
                     "需要读取的 1 到 4 个直接来源 URL。优先选择官方一手来源和"
@@ -279,7 +266,8 @@ class ReadWebPageTool(Tool):
             f"{self._max_pages_per_call} 个公开网页中与具体问题相关的正文片段。"
             "搜索摘要只能用于发现来源；回答重要事实前，应优先用本工具读取官方"
             "一手来源和至少两个相互独立的高质量来源。读取成功只表示已取得页面"
-            "内容，不自动证明内容真实。"
+            "内容，不自动证明内容真实。返回的 source_id 可与搜索结果对应，"
+            "verified_source_ids 只包含成功取得正文的来源。"
         )
         self.confirmation_description = (
             "将把下方 URL 和核对问题发送给第三方 Tavily 读取网页正文；"
@@ -382,44 +370,29 @@ class ReadWebPageTool(Tool):
         return WebPageArguments(tuple(urls), normalized_question)
 
     def _validate_url(self, value: object) -> str:
-        if not isinstance(value, str) or not value.strip():
-            raise ToolExecutionError("read_web_page 的每个 URL 都必须是非空字符串。")
-        url = value.strip()
-        if len(url) > MAX_URL_LENGTH:
-            raise ToolExecutionError(
-                f"read_web_page 的 URL 不能超过 {MAX_URL_LENGTH} 个字符。"
-            )
-        if SECRET_VALUE_PATTERN.search(url):
-            raise ToolExecutionError("URL 疑似包含密钥，已拒绝发送给网页读取服务。")
         try:
-            parsed = urlsplit(url)
-            port = parsed.port
-        except ValueError as error:
-            raise ToolExecutionError("read_web_page 收到无效 URL。") from error
-        hostname = parsed.hostname
-        if parsed.scheme not in {"http", "https"} or hostname is None:
-            raise ToolExecutionError("read_web_page 只接受完整的 HTTP 或 HTTPS URL。")
-        if parsed.username is not None or parsed.password is not None:
-            raise ToolExecutionError("read_web_page 不接受包含用户名或密码的 URL。")
-        if port is not None and port not in {80, 443}:
-            raise ToolExecutionError("read_web_page 不接受非标准网络端口。")
-        normalized_host = hostname.casefold().rstrip(".")
-        if self._is_non_public_host(normalized_host):
-            raise ToolExecutionError("read_web_page 不接受本机、内网或保留地址。")
-        if self._is_excluded_host(normalized_host):
-            raise ToolExecutionError("read_web_page 拒绝读取用户配置中排除的域名。")
-        if self._is_search_redirect(normalized_host, parsed.path):
-            raise ToolExecutionError(
-                "read_web_page 不接受搜索引擎跳转链接，请使用最终来源 URL。"
+            return normalize_public_web_url(
+                value,
+                excluded_domains=self._excluded_domains,
             )
-        for name, item in parse_qsl(parsed.query, keep_blank_values=True):
-            if item and SENSITIVE_QUERY_NAME_PATTERN.search(name):
-                raise ToolExecutionError(
-                    "URL 查询参数疑似包含访问凭据，已拒绝发送。"
+        except PublicWebUrlError as error:
+            messages = {
+                "empty_url": "read_web_page 的每个 URL 都必须是非空字符串。",
+                "url_too_long": "read_web_page 的 URL 不能超过 2048 个字符。",
+                "credential_url": "URL 疑似包含访问凭据，已拒绝发送。",
+                "nonstandard_port": "read_web_page 不接受非标准网络端口。",
+                "non_public_host": "read_web_page 不接受本机、内网或保留地址。",
+                "excluded_domain": "read_web_page 拒绝读取用户配置中排除的域名。",
+                "search_redirect": (
+                    "read_web_page 不接受搜索引擎跳转链接，请使用最终来源 URL。"
+                ),
+            }
+            raise ToolExecutionError(
+                messages.get(
+                    error.reason,
+                    "read_web_page 只接受有效、完整的 HTTP 或 HTTPS URL。",
                 )
-        return urlunsplit(
-            (parsed.scheme.casefold(), parsed.netloc, parsed.path or "/", parsed.query, "")
-        )
+            ) from error
 
     @staticmethod
     def _contains_sensitive_text(value: str) -> bool:
@@ -433,32 +406,6 @@ class ReadWebPageTool(Tool):
         return len(secret) >= 12 and not any(
             marker in normalized for marker in PLACEHOLDER_MARKERS
         )
-
-    @staticmethod
-    def _is_non_public_host(hostname: str) -> bool:
-        if hostname == "localhost" or hostname.endswith(BLOCKED_HOST_SUFFIXES):
-            return True
-        try:
-            address = ipaddress.ip_address(hostname)
-        except ValueError:
-            try:
-                ascii_hostname = hostname.encode("idna").decode("ascii")
-            except UnicodeError:
-                return True
-            return HOST_PATTERN.fullmatch(ascii_hostname) is None
-        return not address.is_global
-
-    def _is_excluded_host(self, hostname: str) -> bool:
-        normalized = hostname.removeprefix("www.")
-        return any(
-            normalized == domain or normalized.endswith(f".{domain}")
-            for domain in self._excluded_domains
-        )
-
-    @staticmethod
-    def _is_search_redirect(hostname: str, path: str) -> bool:
-        is_google = hostname.startswith("google.") or ".google." in hostname
-        return is_google and path.rstrip("/").casefold() in {"/url", "/goto"}
 
     def _normalize_response(
         self,
@@ -492,7 +439,7 @@ class ReadWebPageTool(Tool):
             if requested_url is None:
                 integrity_failures.append(
                     {
-                        "url": resolved_url,
+                        "url": "",
                         "error": "网页读取服务返回了不属于请求域名的结果，已忽略。",
                     }
                 )
@@ -503,6 +450,7 @@ class ReadWebPageTool(Tool):
             truncated = len(content) > self._max_content_chars
             pages.append(
                 {
+                    "source_id": source_id_for_url(requested_url),
                     "requested_url": requested_url,
                     "url": resolved_url,
                     "redirected": requested_url != resolved_url,
@@ -524,14 +472,38 @@ class ReadWebPageTool(Tool):
                     continue
                 failed_url = item.get("url")
                 error = item.get("error")
+                try:
+                    normalized_failed_url = self._validate_url(failed_url)
+                except ToolExecutionError:
+                    failures.append(
+                        {
+                            "url": "",
+                            "error": (
+                                "网页读取服务返回了无效或未请求的失败 URL，已忽略。"
+                            ),
+                        }
+                    )
+                    continue
+                requested_url = self._match_requested_url(
+                    normalized_failed_url,
+                    urls,
+                    used_requested_urls,
+                )
+                if requested_url is None:
+                    failures.append(
+                        {
+                            "url": "",
+                            "error": (
+                                "网页读取服务返回了不属于请求来源的失败结果，已忽略。"
+                            ),
+                        }
+                    )
+                    continue
                 failures.append(
                     {
-                        "url": failed_url if isinstance(failed_url, str) else "",
-                        "error": (
-                            error.strip()[:MAX_ERROR_LENGTH]
-                            if isinstance(error, str)
-                            else "网页内容提取失败。"
-                        ),
+                        "source_id": source_id_for_url(requested_url),
+                        "url": requested_url,
+                        "error": self._safe_provider_error(error),
                     }
                 )
         reported_failure_urls = {
@@ -556,12 +528,22 @@ class ReadWebPageTool(Tool):
             "provider": "tavily",
             "question": question,
             "requested_urls": list(urls),
+            "requested_sources": [
+                {"source_id": source_id_for_url(url), "url": url}
+                for url in urls
+            ],
             "provider_request_count": 1,
             "requested_page_count": len(urls),
             "page_count": len(pages),
             "pages": pages,
             "failures": failures,
             "partial_failure": bool(failures) or len(pages) < len(urls),
+            "verified_source_ids": [page["source_id"] for page in pages],
+            "failed_source_ids": [
+                failure["source_id"]
+                for failure in failures
+                if isinstance(failure.get("source_id"), str)
+            ],
             "verification_notice": (
                 "已提取相关页面正文；这不自动证明内容真实，重要结论仍需比较"
                 "至少两个相互独立的高质量来源。"
@@ -570,12 +552,21 @@ class ReadWebPageTool(Tool):
         response_time = response.get("response_time")
         if isinstance(response_time, (int, float)) and not isinstance(
             response_time, bool
-        ):
+        ) and math.isfinite(float(response_time)):
             payload["response_time"] = float(response_time)
         request_id = response.get("request_id")
         if isinstance(request_id, str) and request_id.strip():
-            payload["request_id"] = request_id.strip()
+            payload["request_id"] = request_id.strip()[:MAX_PROVIDER_ID_LENGTH]
         return payload
+
+    @classmethod
+    def _safe_provider_error(cls, value: object) -> str:
+        if not isinstance(value, str) or not value.strip():
+            return "网页内容提取失败。"
+        normalized = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", value).strip()
+        if cls._contains_sensitive_text(normalized):
+            return "网页内容提取失败（服务返回的错误信息已隐藏）。"
+        return normalized[:MAX_ERROR_LENGTH]
 
     @staticmethod
     def _match_requested_url(

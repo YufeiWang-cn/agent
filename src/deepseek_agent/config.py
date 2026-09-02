@@ -2,6 +2,7 @@
 
 import os
 import re
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,6 +24,7 @@ DEFAULT_COMMAND_EXECUTION_MODE = "local"
 DEFAULT_COMMAND_CONTAINER_IMAGE = "python:3.10-slim"
 DEFAULT_WEB_SEARCH_TIMEOUT = 20.0
 DEFAULT_WEB_SEARCH_MAX_RESULTS = 5
+DEFAULT_WEB_SEARCH_MIN_SCORE = 0.25
 DEFAULT_WEB_SEARCH_AUTO_CALLS_PER_TURN = 2
 DEFAULT_WEB_SEARCH_SCOPE = "balanced"
 DEFAULT_WEB_SEARCH_DOMESTIC_RESULTS = 3
@@ -198,6 +200,7 @@ class Settings:
     tavily_api_key: str | None = None
     web_search_timeout: float = DEFAULT_WEB_SEARCH_TIMEOUT
     web_search_max_results: int = DEFAULT_WEB_SEARCH_MAX_RESULTS
+    web_search_min_score: float = DEFAULT_WEB_SEARCH_MIN_SCORE
     web_search_auto_calls_per_turn: int = DEFAULT_WEB_SEARCH_AUTO_CALLS_PER_TURN
     web_search_default_scope: str = DEFAULT_WEB_SEARCH_SCOPE
     web_search_domestic_results: int = DEFAULT_WEB_SEARCH_DOMESTIC_RESULTS
@@ -314,6 +317,17 @@ class Settings:
         if web_search_max_results > MAX_WEB_SEARCH_RESULTS:
             raise RuntimeError(
                 f"AGENT_WEB_SEARCH_MAX_RESULTS 不能大于 {MAX_WEB_SEARCH_RESULTS}。"
+            )
+        web_search_min_score = _read_float_env(
+            "AGENT_WEB_SEARCH_MIN_SCORE",
+            DEFAULT_WEB_SEARCH_MIN_SCORE,
+            minimum=0,
+            allow_minimum=True,
+            error_message="AGENT_WEB_SEARCH_MIN_SCORE 必须是 0 到 1 之间的数字。",
+        )
+        if not math.isfinite(web_search_min_score) or web_search_min_score > 1:
+            raise RuntimeError(
+                "AGENT_WEB_SEARCH_MIN_SCORE 必须是 0 到 1 之间的数字。"
             )
         web_search_auto_calls_per_turn = _read_int_env(
             "AGENT_WEB_SEARCH_AUTO_CALLS_PER_TURN",
@@ -448,6 +462,7 @@ class Settings:
             tavily_api_key=tavily_api_key,
             web_search_timeout=web_search_timeout,
             web_search_max_results=web_search_max_results,
+            web_search_min_score=web_search_min_score,
             web_search_auto_calls_per_turn=web_search_auto_calls_per_turn,
             web_search_default_scope=_read_web_search_scope(),
             web_search_domestic_results=web_search_domestic_results,
