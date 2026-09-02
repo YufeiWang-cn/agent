@@ -3,7 +3,7 @@
 import queue
 import tkinter as tk
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from _path_setup import add_src_to_path
 
@@ -18,6 +18,7 @@ from deepseek_agent.ui.tk_app import (
     _coalesce_ui_events,
     _dequeue_ui_events,
     _format_activity_status,
+    run_gui,
 )
 
 
@@ -199,9 +200,24 @@ class UiEventTests(unittest.TestCase):
             self.assertIsNone(app._conversation._search_job)
             self.assertIsNone(app._conversation._resize_job)
             self.assertTrue(app._conversation._disposed)
+            self.assertTrue(root.winfo_exists())
         finally:
-            if not getattr(app, "_closed", False):
+            if root.winfo_exists():
                 root.destroy()
+
+    def test_run_gui_destroys_root_after_mainloop_unwinds(self) -> None:
+        root = Mock()
+        settings = Mock()
+
+        with (
+            patch("deepseek_agent.ui.tk_app.tk.Tk", return_value=root),
+            patch("deepseek_agent.ui.tk_app.AgentApp") as app_class,
+        ):
+            run_gui(settings)
+
+        app_class.assert_called_once_with(root, settings, logger=None)
+        root.mainloop.assert_called_once_with()
+        root.destroy.assert_called_once_with()
 
 
 if __name__ == "__main__":

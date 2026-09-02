@@ -3,6 +3,7 @@
 import logging
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 from uuid import uuid4
@@ -36,6 +37,7 @@ from .planning import (
 from .reliability import RetryPolicy, RetryingChatModel
 from .runtime import AgentEvent, RunStatus, TurnOutcome, TurnRuntimeState
 from .tools import ToolEffect, ToolRegistry, build_default_registry
+from .timekeeping import CHINA_TIMEZONE_NAME, now_china
 
 
 DEFAULT_SESSION_DIRECTORY = PROJECT_ROOT / "data" / "sessions"
@@ -156,6 +158,20 @@ class Agent:
                 ),
                 web_search_excluded_domains=(
                     settings.web_search_excluded_domains
+                ),
+                web_page_timeout=settings.web_page_timeout,
+                web_page_max_pages_per_call=(
+                    settings.web_page_max_pages_per_call
+                ),
+                web_page_auto_pages_per_turn=(
+                    settings.web_page_auto_pages_per_turn
+                ),
+                web_page_chunks_per_source=(
+                    settings.web_page_chunks_per_source
+                ),
+                web_page_extract_depth=settings.web_page_extract_depth,
+                web_page_max_content_chars=(
+                    settings.web_page_max_content_chars
                 ),
             )
         )
@@ -829,7 +845,26 @@ class Agent:
             force_continuation=force_plan_continuation,
             finalization=finalization,
         )
+        if messages and messages[0].get("role") == "system":
+            first = dict(messages[0])
+            first["content"] = (
+                str(first.get("content", ""))
+                + self._runtime_date_context(now_china())
+            )
+            messages[0] = first
         return list(self._context_manager.prepare(messages).messages)
+
+    @staticmethod
+    def _runtime_date_context(current: datetime) -> str:
+        """生成不写入会话历史、每次模型调用都会刷新的日期约束。"""
+        return (
+            "\n\n[运行时日期]\n"
+            f"当前北京时间日期为 {current:%Y-%m-%d}"
+            f"（{CHINA_TIMEZONE_NAME}，年份 {current:%Y}）。"
+            "今天、本月、近期、最新等相对时间必须以此日期为准。"
+            "不得依据模型训练时间自行补充其他年份；用户未明确指定年份时，"
+            "最新类联网搜索不要在关键词中添加年份，应使用 time_range。"
+        )
 
     def _has_active_execution_plan(self) -> bool:
         """返回当前是否存在尚未结束的执行计划。"""

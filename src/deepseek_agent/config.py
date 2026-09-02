@@ -27,13 +27,24 @@ DEFAULT_WEB_SEARCH_AUTO_CALLS_PER_TURN = 2
 DEFAULT_WEB_SEARCH_SCOPE = "balanced"
 DEFAULT_WEB_SEARCH_DOMESTIC_RESULTS = 3
 DEFAULT_WEB_SEARCH_INTERNATIONAL_RESULTS = 3
+DEFAULT_WEB_PAGE_TIMEOUT = 20.0
+DEFAULT_WEB_PAGE_MAX_PAGES_PER_CALL = 4
+DEFAULT_WEB_PAGE_AUTO_PAGES_PER_TURN = 4
+DEFAULT_WEB_PAGE_CHUNKS_PER_SOURCE = 3
+DEFAULT_WEB_PAGE_EXTRACT_DEPTH = "basic"
+DEFAULT_WEB_PAGE_MAX_CONTENT_CHARS = 6_000
 MAX_WEB_SEARCH_RESULTS = 10
 MAX_WEB_SEARCH_AUTO_CALLS_PER_TURN = 5
 MAX_WEB_SEARCH_DOMAINS = 50
+MAX_WEB_PAGE_PAGES_PER_CALL = 4
+MAX_WEB_PAGE_AUTO_PAGES_PER_TURN = 12
+MAX_WEB_PAGE_CHUNKS_PER_SOURCE = 5
+MAX_WEB_PAGE_CONTENT_CHARS = 20_000
 SUPPORTED_COMMAND_EXECUTION_MODES = frozenset({"docker", "local"})
 SUPPORTED_WEB_SEARCH_SCOPES = frozenset(
     {"balanced", "domestic", "international", "unrestricted"}
 )
+SUPPORTED_WEB_PAGE_EXTRACT_DEPTHS = frozenset({"basic", "advanced"})
 API_KEY_PLACEHOLDERS = frozenset({"replace_with_your_api_key"})
 TAVILY_API_KEY_PLACEHOLDERS = frozenset({"replace_with_your_tavily_api_key"})
 WEB_SEARCH_DOMAIN_PATTERN = re.compile(
@@ -113,6 +124,19 @@ def _read_web_search_scope() -> str:
     return value
 
 
+def _read_web_page_extract_depth() -> str:
+    """读取网页正文提取深度，避免无效值静默增加调用成本。"""
+    value = os.getenv(
+        "AGENT_WEB_PAGE_EXTRACT_DEPTH",
+        DEFAULT_WEB_PAGE_EXTRACT_DEPTH,
+    ).strip().lower()
+    if value not in SUPPORTED_WEB_PAGE_EXTRACT_DEPTHS:
+        raise RuntimeError(
+            "AGENT_WEB_PAGE_EXTRACT_DEPTH 只能是 basic 或 advanced。"
+        )
+    return value
+
+
 def _read_web_search_domains(name: str) -> tuple[str, ...]:
     """读取逗号分隔的搜索域名，拒绝 URL、路径和通配符。"""
     raw_value = os.getenv(name, "").strip()
@@ -183,6 +207,12 @@ class Settings:
     web_search_domestic_domains: tuple[str, ...] = ()
     web_search_international_domains: tuple[str, ...] = ()
     web_search_excluded_domains: tuple[str, ...] = ()
+    web_page_timeout: float = DEFAULT_WEB_PAGE_TIMEOUT
+    web_page_max_pages_per_call: int = DEFAULT_WEB_PAGE_MAX_PAGES_PER_CALL
+    web_page_auto_pages_per_turn: int = DEFAULT_WEB_PAGE_AUTO_PAGES_PER_TURN
+    web_page_chunks_per_source: int = DEFAULT_WEB_PAGE_CHUNKS_PER_SOURCE
+    web_page_extract_depth: str = DEFAULT_WEB_PAGE_EXTRACT_DEPTH
+    web_page_max_content_chars: int = DEFAULT_WEB_PAGE_MAX_CONTENT_CHARS
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -343,6 +373,57 @@ class Settings:
                 "联网搜索域名不能同时出现在允许列表和排除列表："
                 f"{conflicts}。"
             )
+        web_page_timeout = _read_float_env(
+            "AGENT_WEB_PAGE_TIMEOUT",
+            DEFAULT_WEB_PAGE_TIMEOUT,
+            minimum=0,
+            allow_minimum=False,
+            error_message="AGENT_WEB_PAGE_TIMEOUT 必须大于 0。",
+        )
+        web_page_max_pages_per_call = _read_int_env(
+            "AGENT_WEB_PAGE_MAX_PAGES_PER_CALL",
+            DEFAULT_WEB_PAGE_MAX_PAGES_PER_CALL,
+            minimum=1,
+            error_message="AGENT_WEB_PAGE_MAX_PAGES_PER_CALL 必须是正整数。",
+        )
+        if web_page_max_pages_per_call > MAX_WEB_PAGE_PAGES_PER_CALL:
+            raise RuntimeError(
+                "AGENT_WEB_PAGE_MAX_PAGES_PER_CALL 不能大于 "
+                f"{MAX_WEB_PAGE_PAGES_PER_CALL}。"
+            )
+        web_page_auto_pages_per_turn = _read_int_env(
+            "AGENT_WEB_PAGE_AUTO_PAGES_PER_TURN",
+            DEFAULT_WEB_PAGE_AUTO_PAGES_PER_TURN,
+            minimum=0,
+            error_message="AGENT_WEB_PAGE_AUTO_PAGES_PER_TURN 不能小于 0。",
+        )
+        if web_page_auto_pages_per_turn > MAX_WEB_PAGE_AUTO_PAGES_PER_TURN:
+            raise RuntimeError(
+                "AGENT_WEB_PAGE_AUTO_PAGES_PER_TURN 不能大于 "
+                f"{MAX_WEB_PAGE_AUTO_PAGES_PER_TURN}。"
+            )
+        web_page_chunks_per_source = _read_int_env(
+            "AGENT_WEB_PAGE_CHUNKS_PER_SOURCE",
+            DEFAULT_WEB_PAGE_CHUNKS_PER_SOURCE,
+            minimum=1,
+            error_message="AGENT_WEB_PAGE_CHUNKS_PER_SOURCE 必须是正整数。",
+        )
+        if web_page_chunks_per_source > MAX_WEB_PAGE_CHUNKS_PER_SOURCE:
+            raise RuntimeError(
+                "AGENT_WEB_PAGE_CHUNKS_PER_SOURCE 不能大于 "
+                f"{MAX_WEB_PAGE_CHUNKS_PER_SOURCE}。"
+            )
+        web_page_max_content_chars = _read_int_env(
+            "AGENT_WEB_PAGE_MAX_CONTENT_CHARS",
+            DEFAULT_WEB_PAGE_MAX_CONTENT_CHARS,
+            minimum=1,
+            error_message="AGENT_WEB_PAGE_MAX_CONTENT_CHARS 必须是正整数。",
+        )
+        if web_page_max_content_chars > MAX_WEB_PAGE_CONTENT_CHARS:
+            raise RuntimeError(
+                "AGENT_WEB_PAGE_MAX_CONTENT_CHARS 不能大于 "
+                f"{MAX_WEB_PAGE_CONTENT_CHARS}。"
+            )
 
         return cls(
             api_key=api_key,
@@ -376,4 +457,10 @@ class Settings:
             web_search_domestic_domains=web_search_domestic_domains,
             web_search_international_domains=web_search_international_domains,
             web_search_excluded_domains=web_search_excluded_domains,
+            web_page_timeout=web_page_timeout,
+            web_page_max_pages_per_call=web_page_max_pages_per_call,
+            web_page_auto_pages_per_turn=web_page_auto_pages_per_turn,
+            web_page_chunks_per_source=web_page_chunks_per_source,
+            web_page_extract_depth=_read_web_page_extract_depth(),
+            web_page_max_content_chars=web_page_max_content_chars,
         )

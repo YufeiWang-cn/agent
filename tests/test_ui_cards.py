@@ -68,6 +68,36 @@ class UiCardTests(unittest.TestCase):
         )
         self.assertTrue(ToolCallCard._is_partial_search_result(partial))
 
+    def test_web_page_card_summarizes_question_and_partial_result(self) -> None:
+        arguments = json.dumps(
+            {
+                "urls": ["https://one.example.com", "https://two.example.org"],
+                "question": "这两个来源是否支持发布日期？",
+            },
+            ensure_ascii=False,
+        )
+        result = json.dumps(
+            {
+                "requested_page_count": 2,
+                "page_count": 1,
+                "partial_failure": True,
+            },
+            ensure_ascii=False,
+        )
+
+        self.assertEqual(
+            ToolCallCard._make_display_name("read_web_page", arguments),
+            "读取网页正文",
+        )
+        self.assertEqual(
+            ToolCallCard._make_argument_summary("read_web_page", arguments),
+            "核对：这两个来源是否支持发布日期？ · 2 个来源",
+        )
+        self.assertEqual(
+            ToolCallCard._make_result_summary("read_web_page", result),
+            "已读取 1/2 个来源 · 部分失败",
+        )
+
     def test_plan_card_renders_progress_and_can_collapse(self) -> None:
         try:
             root = tk.Tk()

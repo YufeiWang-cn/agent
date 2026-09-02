@@ -108,7 +108,7 @@ docker image inspect python:3.10-slim
 | `DEEPSEEK_API_KEY` | 是 | 必须把 `replace_with_your_api_key` 替换为自己的真实密钥 |
 | `DEEPSEEK_BASE_URL` | 通常不需要 | 使用 DeepSeek 官方接口时保留默认值；使用兼容服务时改成服务提供的地址 |
 | `DEEPSEEK_MODEL` | 视账号而定 | 默认是 `deepseek-v4-pro`；账号或兼容服务不支持时改成实际可用的模型名称 |
-| `TAVILY_API_KEY` | 联网搜索时必须 | 默认不启用；需要 `web_search` 时取消注释并替换为自己的 Tavily API Key |
+| `TAVILY_API_KEY` | 联网搜索和正文核验时必须 | 默认不启用；需要 `web_search` 和 `read_web_page` 时取消注释并替换为自己的 Tavily API Key |
 | `AGENT_WEB_SEARCH_TIMEOUT` | 否 | 联网搜索超时秒数，默认 `20` |
 | `AGENT_WEB_SEARCH_MAX_RESULTS` | 否 | 普通 `unrestricted` 搜索的默认返回数量，可设置为 `1` 到 `10` |
 | `AGENT_WEB_SEARCH_DEFAULT_SCOPE` | 否 | 默认 `balanced`；也可设置为 `domestic`、`international` 或 `unrestricted` |
@@ -118,6 +118,12 @@ docker image inspect python:3.10-slim
 | `AGENT_WEB_SEARCH_INTERNATIONAL_DOMAINS` | 否 | 国际检索允许的域名，格式同上；适合固定为可信国际来源 |
 | `AGENT_WEB_SEARCH_EXCLUDED_DOMAINS` | 否 | 所有检索范围共同排除的域名，英文逗号分隔 |
 | `AGENT_WEB_SEARCH_AUTO_CALLS_PER_TURN` | 否 | 每轮自动执行的网络请求数，默认 `2`，可设置为 `0` 到 `5`；一次 `balanced` 使用 2 次，设为 `0` 时每次都确认 |
+| `AGENT_WEB_PAGE_TIMEOUT` | 否 | 网页正文读取超时秒数，默认 `20` |
+| `AGENT_WEB_PAGE_MAX_PAGES_PER_CALL` | 否 | 单次正文核验最多读取的来源数，默认 `4`，可设置为 `1` 到 `4` |
+| `AGENT_WEB_PAGE_AUTO_PAGES_PER_TURN` | 否 | 每轮自动读取页面额度，默认 `4`，可设置为 `0` 到 `12`；重复 URL 仍需确认 |
+| `AGENT_WEB_PAGE_CHUNKS_PER_SOURCE` | 否 | 每个来源围绕核对问题返回的相关片段数，默认 `3`，可设置为 `1` 到 `5` |
+| `AGENT_WEB_PAGE_EXTRACT_DEPTH` | 否 | 默认 `basic`；复杂动态页面可改为 `advanced`，但延迟和 Tavily 额度消耗更高 |
+| `AGENT_WEB_PAGE_MAX_CONTENT_CHARS` | 否 | 每个来源返回给模型的正文字符上限，默认 `6000`，最大 `20000` |
 | `AGENT_WORKSPACE` | 否 | 需要限制到其他工作区时，取消注释并把示例路径完整替换为真实绝对路径 |
 | `AGENT_COMMAND_EXECUTION_MODE` | 否 | 默认 `local`；需要 Docker 隔离 Python 命令时改为 `docker` |
 | `AGENT_COMMAND_CONTAINER_IMAGE` | 否 | 修改后必须确保对应镜像已存在；项目不会自动拉取 |
@@ -128,7 +134,9 @@ docker image inspect python:3.10-slim
 
 模型请求默认超时为 60 秒，临时网络错误最多重试 3 次，等待时间依次为 1、2、4 秒。可以通过 `.env` 中的 `DEEPSEEK_REQUEST_TIMEOUT`、`DEEPSEEK_MAX_RETRIES` 和 `DEEPSEEK_RETRY_BASE_DELAY` 调整。
 
-联网搜索使用 Tavily Search API。先在 [Tavily 官方控制台](https://app.tavily.com) 获取 API Key，然后在 `.env` 中取消 `TAVILY_API_KEY` 的注释并替换占位值；重新启动 Agent 后，`/tools` 应显示 `web_search`。未配置该 Key 时工具不会注册，其他离线功能不受影响。默认 `balanced` 模式只产生一张工具卡，但会针对同一信息目标并行执行一次国内检索和一次国际检索：国内请求使用中文关键词，国际请求使用英文关键词，两路分别采用 `AGENT_WEB_SEARCH_DOMESTIC_RESULTS` 和 `AGENT_WEB_SEARCH_INTERNATIONAL_RESULTS`，模型不能自行覆盖这两个配置。如果希望进一步限制来源，可用三个 `*_DOMAINS` 配置填写可信域名或排除域名；必须只写域名，例如 `reuters.com,apnews.com`，不要填写 `https://`、路径或通配符。结果数量是期望上限，过滤无效 URL、空标题和同域名重复结果后，实际数量可能更少；系统不会为凑数保留低质量重复来源。`requested_scope` 表示请求的来源倾向，不是对网站实际地域归属的认证。用户明确限定来源、指定网站或只需要官方一手资料时，Agent 可以只执行相应范围。自动额度按真实第三方请求计数，因此一次 `balanced` 会使用默认的 2 次额度；同一轮重复搜索或继续发起搜索会先显示参数并等待用户确认，拒绝后不会发送网络请求。确认界面不会显示 API Key。明显疑似包含 API Key、Token、密码或私钥的搜索词会被直接拒绝，不会通过确认放行。搜索词会发送给第三方服务，请勿搜索个人隐私或工作区敏感内容。工具固定使用基础搜索，不请求网页全文或 Tavily 生成的二次答案，每路最多返回 10 条带来源 URL 的摘要；一路临时失败时会保留另一路结果并在工具卡显示“部分完成”，两路都失败才视为执行失败。
+联网搜索和正文核验分别使用 Tavily Search API 与 Extract API。先在 [Tavily 官方控制台](https://app.tavily.com) 获取 API Key，然后在 `.env` 中取消 `TAVILY_API_KEY` 的注释并替换占位值；重新启动 Agent 后，`/tools` 应同时显示 `web_search` 和 `read_web_page`。未配置该 Key 时两个工具都不会注册，其他离线功能不受影响。默认 `balanced` 搜索只产生一张工具卡，但会针对同一信息目标并行执行一次国内检索和一次国际检索：国内请求使用中文关键词，国际请求使用英文关键词，两路分别采用 `AGENT_WEB_SEARCH_DOMESTIC_RESULTS` 和 `AGENT_WEB_SEARCH_INTERNATIONAL_RESULTS`，模型不能自行覆盖这两个配置。如果希望进一步限制来源，可用三个 `*_DOMAINS` 配置填写可信域名或排除域名；必须只写域名，例如 `reuters.com,apnews.com`，不要填写 `https://`、路径或通配符。结果数量是期望上限；工具会在同一次请求中获取不超过两倍、且最多 10 条候选，再过滤无效 URL、搜索引擎跳转页、空标题和同域名重复结果，因此不会为凑数保留低质量来源，实际数量仍可能更少。`requested_scope` 表示请求的来源倾向，不是对网站实际地域归属的认证。用户明确限定来源、指定网站或只需要官方一手资料时，Agent 可以只执行相应范围。搜索自动额度按真实第三方请求计数，因此一次 `balanced` 会使用默认的 2 次额度；同一轮重复搜索或继续发起搜索会先显示参数并等待用户确认。
+
+`web_search` 固定使用基础搜索，只返回搜索服务提供的标题、直接来源 URL 和索引摘要，不把摘要冒充网页正文。需要回答重要事实或判断具体页面内容时，Agent 会从候选结果中选择 2 到 4 个高质量来源，并用 `read_web_page` 一次批量提取与核对问题相关的正文片段。页面读取成功只代表已经取得该页面内容，不自动证明其陈述真实；重要结论仍需比较相互独立的来源。每轮默认可自动读取 4 页，重复 URL 或超过额度后才显示确认窗口。工具拒绝本机、内网、保留地址、非标准端口、搜索引擎跳转页、配置中排除的域名，以及疑似携带访问凭据的 URL。读取失败、部分失败或正文不支持搜索摘要时，Agent 应明确说明而不能声称已经核实。搜索词、核对问题和 URL 都会发送给第三方服务，请勿放入 API Key、Token、密码、个人隐私或工作区敏感内容。
 
 `AGENT_WORKSPACE` 是文件工具唯一允许访问的根目录，默认是项目根目录；`AGENT_MAX_FILE_SIZE` 控制单次读取或写入的最大字节数，默认 `100000`。
 
@@ -198,6 +206,7 @@ python main.py
 - `update_plan`：创建、更新或替换复杂任务的结构化执行计划和规划方案
 - `get_current_time`：获取指定时区的当前日期和时间
 - `web_search`：搜索公开互联网中的当前信息，可区分国内、国际或不限来源范围，并返回标题、来源 URL 和相关摘要；配置 `TAVILY_API_KEY` 后启用
+- `read_web_page`：批量读取 1 到 4 个公开来源中与具体问题相关的正文片段，用于核对搜索摘要和重要结论；与 `web_search` 共用 `TAVILY_API_KEY`
 - `list_directory`：列出工作目录内的直接子项
 - `read_text_file`：读取工作目录内的 UTF-8 文本文件
 - `search_text`：递归搜索工作目录内的 UTF-8 文本并返回文件和行号

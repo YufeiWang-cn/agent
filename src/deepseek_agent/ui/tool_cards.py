@@ -387,6 +387,8 @@ class ToolCallCard:
 
     @staticmethod
     def _make_display_name(name: str, arguments: str) -> str:
+        if name == "read_web_page":
+            return "读取网页正文"
         if name != "web_search":
             return name
         try:
@@ -405,6 +407,19 @@ class ToolCallCard:
 
     @classmethod
     def _make_argument_summary(cls, name: str, arguments: str) -> str:
+        if name == "read_web_page":
+            try:
+                payload = json.loads(arguments)
+            except json.JSONDecodeError:
+                return cls._make_summary(arguments)
+            if isinstance(payload, dict):
+                question = payload.get("question")
+                urls = payload.get("urls")
+                if isinstance(question, str) and isinstance(urls, list):
+                    return cls._make_summary(
+                        f"核对：{question} · {len(urls)} 个来源"
+                    )
+            return cls._make_summary(arguments)
         if name != "web_search":
             return cls._make_summary(arguments)
         try:
@@ -423,6 +438,23 @@ class ToolCallCard:
 
     @classmethod
     def _make_result_summary(cls, name: str, result: str) -> str:
+        if name == "read_web_page":
+            try:
+                payload = json.loads(result)
+            except json.JSONDecodeError:
+                return cls._make_summary(result)
+            if isinstance(payload, dict):
+                page_count = payload.get("page_count")
+                requested_count = payload.get("requested_page_count")
+                if (
+                    isinstance(page_count, int)
+                    and not isinstance(page_count, bool)
+                    and isinstance(requested_count, int)
+                    and not isinstance(requested_count, bool)
+                ):
+                    suffix = " · 部分失败" if payload.get("partial_failure") else ""
+                    return f"已读取 {page_count}/{requested_count} 个来源{suffix}"
+            return cls._make_summary(result)
         if name != "web_search":
             return cls._make_summary(result)
         try:

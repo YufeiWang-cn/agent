@@ -2,7 +2,9 @@
 
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from _path_setup import add_src_to_path
 
@@ -127,6 +129,32 @@ class ContextManagerTests(unittest.TestCase):
             self.assertIsNotNone(saved_session)
             self.assertEqual(len(saved_session.messages), 5)
             self.assertEqual(saved_session.messages[1]["content"], "旧问题" * 500)
+
+    def test_agent_injects_fresh_china_date_without_persisting_it(self) -> None:
+        settings = Settings(
+            api_key="test",
+            base_url="https://example.invalid",
+            model="recording-model",
+            system_prompt="system",
+        )
+        model = RecordingModel()
+        with tempfile.TemporaryDirectory() as directory:
+            store = JsonSessionStore(Path(directory))
+            agent = Agent(settings, model=model, session_store=store)
+            with patch(
+                "deepseek_agent.agent.now_china",
+                side_effect=(datetime(2026, 8, 29), datetime(2027, 1, 2)),
+            ):
+                first = agent._prepare_model_messages(
+                    force_plan_continuation=False
+                )
+                second = agent._prepare_model_messages(
+                    force_plan_continuation=False
+                )
+
+        self.assertIn("当前北京时间日期为 2026-08-29", first[0]["content"])
+        self.assertIn("年份 2027", second[0]["content"])
+        self.assertEqual(agent._conversation.messages[0]["content"], "system")
 
 
 if __name__ == "__main__":

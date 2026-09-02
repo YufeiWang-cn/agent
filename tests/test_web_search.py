@@ -4,7 +4,8 @@ import json
 import tempfile
 import threading
 import unittest
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from datetime import datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 
@@ -106,6 +107,7 @@ class WebSearchToolTests(unittest.TestCase):
         domestic_domains: tuple[str, ...] = (),
         international_domains: tuple[str, ...] = (),
         excluded_domains: tuple[str, ...] = (),
+        now_provider: Callable[[], datetime] = lambda: datetime(2026, 8, 29),
     ) -> WebSearchTool:
         client = TavilySearchClient("tvly-private-test-key", transport=transport)
         return WebSearchTool(
@@ -119,6 +121,7 @@ class WebSearchToolTests(unittest.TestCase):
             domestic_domains=domestic_domains,
             international_domains=international_domains,
             excluded_domains=excluded_domains,
+            now_provider=now_provider,
             client=client,
         )
 
@@ -146,6 +149,11 @@ class WebSearchToolTests(unittest.TestCase):
                         "content": "ignored duplicate",
                     },
                     {
+                        "title": "Search redirect",
+                        "url": "https://www.google.com.hk/url?q=https://example.net/news",
+                        "content": "not a direct source",
+                    },
+                    {
                         "title": "Second result",
                         "url": "http://example.org/second",
                         "content": "summary",
@@ -168,6 +176,8 @@ class WebSearchToolTests(unittest.TestCase):
         )
 
         self.assertEqual(result["provider"], "tavily")
+        self.assertEqual(result["result_content_type"], "search_snippet")
+        self.assertFalse(result["page_content_read"])
         self.assertEqual(result["query"], "latest agent news")
         self.assertEqual(result["requested_scope"], "unrestricted")
         self.assertEqual(result["provider_request_count"], 1)
@@ -176,11 +186,12 @@ class WebSearchToolTests(unittest.TestCase):
         self.assertEqual(len(result["results"][0]["content"]), 1_500)
         self.assertEqual(result["results"][0]["score"], 0.987654)
         self.assertEqual(result["results"][1]["url"], "http://example.org/second")
+        self.assertNotIn("google.com", json.dumps(result))
         self.assertNotIn("tvly-private-test-key", json.dumps(result))
 
         request, headers, timeout = transport.calls[0]
         self.assertEqual(request["query"], "latest agent news")
-        self.assertEqual(request["max_results"], 2)
+        self.assertEqual(request["max_results"], 4)
         self.assertEqual(request["topic"], "news")
         self.assertEqual(request["time_range"], "week")
         self.assertNotIn("scope", request)
@@ -205,7 +216,7 @@ class WebSearchToolTests(unittest.TestCase):
         )
 
         request, _headers, timeout = transport.calls[0]
-        self.assertEqual(request["max_results"], 3)
+        self.assertEqual(request["max_results"], 6)
         self.assertEqual(request["topic"], "general")
         self.assertNotIn("time_range", request)
         self.assertEqual(timeout, 3)
@@ -236,6 +247,105 @@ class WebSearchToolTests(unittest.TestCase):
                 with self.assertRaises(ToolExecutionError):
                     self.build_tool(transport).execute(arguments)
                 self.assertEqual(transport.calls, [])
+
+    def test_stale_year_in_latest_search_is_rejected_before_network(self) -> None:
+        cases = (
+            {
+                "query": "DeepSeek 最新新闻 2025",
+                "scope": "domestic",
+                "topic": "news",
+                "time_range": "month",
+            },
+            {
+                "query": "DeepSeek 最新新闻",
+                "international_query": "DeepSeek latest news 2025",
+                "scope": "balanced",
+                "topic": "news",
+                "time_range": "month",
+            },
+        )
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                transport = RecordingTransport()
+                with self.assertRaisesRegex(
+                    ToolExecutionError,
+                    "当前北京时间日期为 2026-08-29",
+                ):
+                    self.build_tool(transport).execute(arguments)
+                self.assertEqual(transport.calls, [])
+
+    def test_current_year_and_explicit_historical_topics_are_allowed(self) -> None:
+        transport = RecordingTransport()
+        tool = self.build_tool(transport)
+
+        tool.execute(
+            {
+                "query": "DeepSeek 最新新闻 2026",
+                "scope": "domestic",
+                "topic": "news",
+                "time_range": "month",
+            }
+        )
+        tool.execute(
+            {
+                "query": "2025 好看的恋爱番推荐",
+                "scope": "unrestricted",
+                "time_range": "year",
+            }
+        )
+
+        self.assertEqual(len(transport.calls), 2)
+
+    def test_normal_google_content_page_is_not_treated_as_redirect(self) -> None:
+        transport = RecordingTransport(
+            {
+                "results": [
+                    {
+                        "title": "Google AI",
+                        "url": "https://www.google.com/about/ai/",
+                        "content": "official content",
+                    }
+                ]
+            }
+        )
+
+        result = json.loads(
+            self.build_tool(transport).execute(
+                {
+                    "query": "Google AI",
+                    "scope": "unrestricted",
+                    "max_results": 1,
+                }
+            )
+        )
+
+        self.assertEqual(result["result_count"], 1)
+        self.assertEqual(result["results"][0]["url"], "https://www.google.com/about/ai/")
+
+    def test_stale_year_failure_record_never_starts_network_execution(self) -> None:
+        transport = RecordingTransport()
+        tool = self.build_tool(transport)
+        executor = ToolExecutor(ToolRegistry([tool]), RejectingConfirmer())
+
+        record = executor.execute(
+            ToolCallRequest(
+                id="call_stale_year",
+                name="web_search",
+                arguments=json.dumps(
+                    {
+                        "query": "DeepSeek 最新新闻 2025",
+                        "scope": "domestic",
+                        "topic": "news",
+                        "time_range": "month",
+                    }
+                ),
+            )
+        )
+
+        self.assertEqual(record.status, ToolExecutionStatus.FAILED)
+        self.assertFalse(record.execution_started)
+        self.assertFalse(record.confirmation_requested)
+        self.assertEqual(transport.calls, [])
 
     def test_cancellation_and_expired_deadline_do_not_start_request(self) -> None:
         for context in (
@@ -345,7 +455,7 @@ class WebSearchToolTests(unittest.TestCase):
 
         self.assertEqual(
             [call[0]["max_results"] for call in transport.calls],
-            [2, 4, 5],
+            [4, 8, 10],
         )
         self.assertEqual(domestic["requested_scope"], "domestic")
         self.assertEqual(international["requested_scope"], "international")
@@ -393,10 +503,10 @@ class WebSearchToolTests(unittest.TestCase):
         requests = {str(request["query"]): request for request in transport.calls}
         domestic = requests["人工智能进展"]
         international = requests["artificial intelligence progress"]
-        self.assertEqual(domestic["max_results"], 2)
+        self.assertEqual(domestic["max_results"], 4)
         self.assertEqual(domestic["include_domains"], ["gov.cn"])
         self.assertNotIn("country", domestic)
-        self.assertEqual(international["max_results"], 4)
+        self.assertEqual(international["max_results"], 8)
         self.assertEqual(international["include_domains"], ["reuters.com"])
         self.assertEqual(domestic["exclude_domains"], ["spam.example"])
         self.assertEqual(international["exclude_domains"], ["spam.example"])

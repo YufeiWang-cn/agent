@@ -7,10 +7,12 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import datetime
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 from urllib.request import Request, urlopen
 
+from ..timekeeping import now_china
 from .base import (
     JsonObject,
     Tool,
@@ -34,6 +36,12 @@ SUPPORTED_TOPICS = frozenset({"general", "news", "finance"})
 SUPPORTED_TIME_RANGES = frozenset({"day", "week", "month", "year"})
 SUPPORTED_SEARCH_SCOPES = frozenset(
     {"balanced", "domestic", "international", "unrestricted"}
+)
+YEAR_PATTERN = re.compile(r"(?<!\d)(20\d{2})(?:年)?(?!\d)")
+FRESHNESS_PATTERN = re.compile(
+    r"最新(?:消息|新闻|资讯|进展|动态|发布)?|本月|本周|今天|今日|近期|当前|刚刚|"
+    r"\b(?:latest|recent|current|today|this\s+(?:month|week))\b",
+    re.IGNORECASE,
 )
 SECRET_PREFIX_PATTERN = re.compile(
     r"\b(?:sk|tvly)-[A-Za-z0-9_-]{12,}\b",
@@ -258,6 +266,7 @@ class WebSearchTool(Tool):
         domestic_domains: Sequence[str] = (),
         international_domains: Sequence[str] = (),
         excluded_domains: Sequence[str] = (),
+        now_provider: Callable[[], datetime] = now_china,
         client: TavilySearchClient | None = None,
     ) -> None:
         if timeout_seconds <= 0:
@@ -290,6 +299,7 @@ class WebSearchTool(Tool):
         self._default_max_results = default_max_results
         self._auto_calls_per_turn = auto_calls_per_turn
         self._default_scope = default_scope
+        self._now_provider = now_provider
         self._domestic_results = domestic_results
         self._international_results = international_results
         self._domestic_domains = self._validate_domains(
@@ -461,6 +471,8 @@ class WebSearchTool(Tool):
         )
         payload: JsonObject = {
             "provider": "tavily",
+            "result_content_type": "search_snippet",
+            "page_content_read": False,
             "requested_scope": "balanced",
             "queries": {
                 "domestic": arguments.query,
@@ -497,7 +509,7 @@ class WebSearchTool(Tool):
             include_domains = self._international_domains
         return self._client.search(
             query,
-            max_results=max_results,
+            max_results=self._provider_result_limit(max_results),
             topic=topic,
             time_range=time_range,
             timeout_seconds=timeout_seconds,
@@ -505,6 +517,11 @@ class WebSearchTool(Tool):
             exclude_domains=self._excluded_domains,
             country=country,
         )
+
+    @staticmethod
+    def _provider_result_limit(result_limit: int) -> int:
+        """多取有限候选，避免过滤无效链接后无法达到期望结果数。"""
+        return min(MAX_RESULTS, result_limit * 2)
 
     def _validate_arguments(self, arguments: JsonObject) -> SearchArguments:
         query = arguments.get("query")
@@ -554,6 +571,17 @@ class WebSearchTool(Tool):
             raise ToolExecutionError(
                 "web_search 的 time_range 只能是 day、week、month 或 year。"
             )
+        self._reject_stale_freshness_year(
+            query,
+            name="query",
+            time_range=time_range,
+        )
+        if international_query is not None:
+            self._reject_stale_freshness_year(
+                international_query,
+                name="international_query",
+                time_range=time_range,
+            )
         return SearchArguments(
             query=query,
             international_query=international_query,
@@ -561,6 +589,35 @@ class WebSearchTool(Tool):
             topic=topic,
             time_range=time_range,
             scope=scope,
+        )
+
+    def _reject_stale_freshness_year(
+        self,
+        query: str,
+        *,
+        name: str,
+        time_range: str | None,
+    ) -> None:
+        """拒绝相对新鲜度、近期范围和过期年份互相冲突的搜索词。"""
+        if time_range is None or FRESHNESS_PATTERN.search(query) is None:
+            return
+        current = self._now_provider()
+        stale_years = sorted(
+            {
+                int(match.group(1))
+                for match in YEAR_PATTERN.finditer(query)
+                if int(match.group(1)) < current.year
+            }
+        )
+        if not stale_years:
+            return
+        years = "、".join(str(year) for year in stale_years)
+        raise ToolExecutionError(
+            f"web_search 的 {name} 同时包含最新类表达、"
+            f"time_range={time_range} 和过期年份 {years}；"
+            f"当前北京时间日期为 {current:%Y-%m-%d}。"
+            "若用户未明确指定历史年份，请删除年份后重试；"
+            "若用户确实要求历史主题，请移除相对时间范围并明确历史语境。"
         )
 
     def _validate_query(self, value: object, name: str) -> str:
@@ -598,6 +655,8 @@ class WebSearchTool(Tool):
             )
         return (
             "搜索公开互联网中的当前信息，返回标题、来源 URL 和相关摘要。"
+            "这些摘要不是网页正文；除非用户只需要候选链接，否则重要事实应继续"
+            "使用 read_web_page 读取并比较具体来源。"
             f"{scope_instruction}"
             f"domestic 默认 {self._domestic_results} 条，"
             f"international 默认 {self._international_results} 条，"
@@ -699,6 +758,8 @@ class WebSearchTool(Tool):
                 or hostname is None
             ):
                 continue
+            if WebSearchTool._is_search_redirect(parsed_url):
+                continue
             normalized_hostname = hostname.casefold().removeprefix("www.")
             if normalized_hostname in seen_domains:
                 continue
@@ -728,6 +789,8 @@ class WebSearchTool(Tool):
         payload: JsonObject = {
             "provider": "tavily",
             "query": query,
+            "result_content_type": "search_snippet",
+            "page_content_read": False,
             "requested_scope": requested_scope,
             "topic": topic,
             "time_range": time_range,
@@ -744,6 +807,14 @@ class WebSearchTool(Tool):
         if isinstance(request_id, str) and request_id.strip():
             payload["request_id"] = request_id.strip()
         return payload
+
+    @staticmethod
+    def _is_search_redirect(parsed_url: SplitResult) -> bool:
+        """过滤搜索引擎跳转页，但不屏蔽对应公司的正常内容页面。"""
+        hostname = (parsed_url.hostname or "").casefold()
+        path = parsed_url.path.rstrip("/").casefold()
+        is_google = hostname.startswith("google.") or ".google." in hostname
+        return is_google and path in {"/url", "/goto"}
 
 
 __all__ = [

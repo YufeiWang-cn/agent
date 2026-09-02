@@ -28,6 +28,7 @@ from .registry import ToolRegistry
 from .run_command import RunCommandTool
 from .search_text import SearchTextTool
 from .update_plan import PlanUpdater, UpdatePlanTool
+from .web_page import ReadWebPageTool, TavilyExtractClient
 from .web_search import TavilySearchClient, WebSearchTool
 from .write_text_file import WriteTextFileTool
 
@@ -50,6 +51,12 @@ def build_default_registry(
     web_search_domestic_domains: tuple[str, ...] = (),
     web_search_international_domains: tuple[str, ...] = (),
     web_search_excluded_domains: tuple[str, ...] = (),
+    web_page_timeout: float = 20.0,
+    web_page_max_pages_per_call: int = 4,
+    web_page_auto_pages_per_turn: int = 4,
+    web_page_chunks_per_source: int = 3,
+    web_page_extract_depth: str = "basic",
+    web_page_max_content_chars: int = 6_000,
 ) -> ToolRegistry:
     """使用同一个工作区守卫构建默认工具注册表。"""
     guard = WorkspaceGuard(workspace_root or Path.cwd(), max_file_size)
@@ -73,8 +80,7 @@ def build_default_registry(
         WriteTextFileTool(guard),
     ]
     if web_search_api_key:
-        tools.insert(
-            2,
+        tools[2:2] = [
             WebSearchTool(
                 web_search_api_key,
                 timeout_seconds=web_search_timeout,
@@ -87,7 +93,17 @@ def build_default_registry(
                 international_domains=web_search_international_domains,
                 excluded_domains=web_search_excluded_domains,
             ),
-        )
+            ReadWebPageTool(
+                web_search_api_key,
+                timeout_seconds=web_page_timeout,
+                max_pages_per_call=web_page_max_pages_per_call,
+                auto_pages_per_turn=web_page_auto_pages_per_turn,
+                chunks_per_source=web_page_chunks_per_source,
+                extract_depth=web_page_extract_depth,
+                max_content_chars=web_page_max_content_chars,
+                excluded_domains=web_search_excluded_domains,
+            ),
+        ]
     if plan_updater is not None:
         # 计划工具依赖当前 Agent 的状态提交回调，因此只在回调存在时注册。
         tools.insert(0, UpdatePlanTool(plan_updater))
@@ -103,6 +119,7 @@ __all__ = [
     "ListDirectoryTool",
     "LocalCommandExecutor",
     "ReadTextFileTool",
+    "ReadWebPageTool",
     "ReplaceTextTool",
     "SearchTextTool",
     "RunCommandTool",
@@ -115,6 +132,7 @@ __all__ = [
     "ToolNotFoundError",
     "ToolRegistry",
     "TavilySearchClient",
+    "TavilyExtractClient",
     "UpdatePlanTool",
     "WebSearchTool",
     "WriteTextFileTool",

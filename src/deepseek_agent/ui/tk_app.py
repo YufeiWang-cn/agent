@@ -845,7 +845,15 @@ class AgentApp:
         self._cancel_ui_jobs()
         self._sidebar.cancel_pending_callbacks()
         self._conversation.dispose()
-        self._root.destroy()
+        # Do not destroy the Tcl interpreter while an ``after`` or window
+        # protocol callback is still on Tk's native stack.  On Windows that
+        # can turn an otherwise clean shutdown into an access violation in
+        # Tcl/Tk.  ``quit`` only asks ``mainloop`` to unwind; ``run_gui`` owns
+        # the root and destroys it after the callback has returned.
+        try:
+            self._root.quit()
+        except tk.TclError:
+            pass
 
 
 def run_gui(
@@ -855,4 +863,13 @@ def run_gui(
     """创建 Tk 根窗口并运行桌面应用主循环。"""
     root = tk.Tk()
     AgentApp(root, settings, logger=logger)
-    root.mainloop()
+    try:
+        root.mainloop()
+    finally:
+        # Keep interpreter teardown outside every Tcl/Tk callback.  Destroying
+        # the root here also covers unexpected Python exceptions from
+        # ``mainloop`` without leaving native GUI resources behind.
+        try:
+            root.destroy()
+        except tk.TclError:
+            pass

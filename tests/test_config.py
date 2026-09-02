@@ -43,6 +43,12 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.web_search_domestic_domains, ())
         self.assertEqual(settings.web_search_international_domains, ())
         self.assertEqual(settings.web_search_excluded_domains, ())
+        self.assertEqual(settings.web_page_timeout, 20)
+        self.assertEqual(settings.web_page_max_pages_per_call, 4)
+        self.assertEqual(settings.web_page_auto_pages_per_turn, 4)
+        self.assertEqual(settings.web_page_chunks_per_source, 3)
+        self.assertEqual(settings.web_page_extract_depth, "basic")
+        self.assertEqual(settings.web_page_max_content_chars, 6_000)
 
     def test_from_env_rejects_invalid_integer(self) -> None:
         environment = {
@@ -74,6 +80,12 @@ class SettingsTests(unittest.TestCase):
             "AGENT_WEB_SEARCH_DOMESTIC_DOMAINS": "Gov.cn, xinhuanet.com,gov.cn",
             "AGENT_WEB_SEARCH_INTERNATIONAL_DOMAINS": "Reuters.com,apnews.com",
             "AGENT_WEB_SEARCH_EXCLUDED_DOMAINS": "spam.example",
+            "AGENT_WEB_PAGE_TIMEOUT": "9.5",
+            "AGENT_WEB_PAGE_MAX_PAGES_PER_CALL": "3",
+            "AGENT_WEB_PAGE_AUTO_PAGES_PER_TURN": "7",
+            "AGENT_WEB_PAGE_CHUNKS_PER_SOURCE": "5",
+            "AGENT_WEB_PAGE_EXTRACT_DEPTH": "advanced",
+            "AGENT_WEB_PAGE_MAX_CONTENT_CHARS": "9000",
         }
         with patch.dict(os.environ, environment, clear=True):
             with patch("deepseek_agent.config.load_dotenv"):
@@ -95,6 +107,12 @@ class SettingsTests(unittest.TestCase):
             ("reuters.com", "apnews.com"),
         )
         self.assertEqual(settings.web_search_excluded_domains, ("spam.example",))
+        self.assertEqual(settings.web_page_timeout, 9.5)
+        self.assertEqual(settings.web_page_max_pages_per_call, 3)
+        self.assertEqual(settings.web_page_auto_pages_per_turn, 7)
+        self.assertEqual(settings.web_page_chunks_per_source, 5)
+        self.assertEqual(settings.web_page_extract_depth, "advanced")
+        self.assertEqual(settings.web_page_max_content_chars, 9_000)
 
     def test_from_env_rejects_tavily_placeholder_and_excessive_results(self) -> None:
         cases = (
@@ -154,6 +172,41 @@ class SettingsTests(unittest.TestCase):
                     "AGENT_WEB_SEARCH_EXCLUDED_DOMAINS": "example.com",
                 },
                 "同时出现在",
+            ),
+            (
+                {
+                    "DEEPSEEK_API_KEY": "test-key",
+                    "AGENT_WEB_PAGE_MAX_PAGES_PER_CALL": "5",
+                },
+                "AGENT_WEB_PAGE_MAX_PAGES_PER_CALL 不能大于 4",
+            ),
+            (
+                {
+                    "DEEPSEEK_API_KEY": "test-key",
+                    "AGENT_WEB_PAGE_AUTO_PAGES_PER_TURN": "13",
+                },
+                "AGENT_WEB_PAGE_AUTO_PAGES_PER_TURN 不能大于 12",
+            ),
+            (
+                {
+                    "DEEPSEEK_API_KEY": "test-key",
+                    "AGENT_WEB_PAGE_CHUNKS_PER_SOURCE": "6",
+                },
+                "AGENT_WEB_PAGE_CHUNKS_PER_SOURCE 不能大于 5",
+            ),
+            (
+                {
+                    "DEEPSEEK_API_KEY": "test-key",
+                    "AGENT_WEB_PAGE_EXTRACT_DEPTH": "deep",
+                },
+                "AGENT_WEB_PAGE_EXTRACT_DEPTH 只能是",
+            ),
+            (
+                {
+                    "DEEPSEEK_API_KEY": "test-key",
+                    "AGENT_WEB_PAGE_MAX_CONTENT_CHARS": "20001",
+                },
+                "AGENT_WEB_PAGE_MAX_CONTENT_CHARS 不能大于 20000",
             ),
         )
         for environment, message in cases:
