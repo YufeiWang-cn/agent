@@ -3,6 +3,7 @@
 from .base import (
     ChatModel,
     ModelProtocolError,
+    ReasoningDelta,
     StreamEvent,
     TextDelta,
     ToolCallRequest,
@@ -14,6 +15,7 @@ __all__ = [
     "ChatModel",
     "DeepSeekModel",
     "ModelProtocolError",
+    "ReasoningDelta",
     "StreamEvent",
     "TextDelta",
     "ToolCallRequest",

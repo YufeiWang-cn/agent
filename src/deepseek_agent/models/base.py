@@ -19,6 +19,13 @@ class TextDelta:
 
 
 @dataclass(frozen=True, slots=True)
+class ReasoningDelta:
+    """保留供应商要求回传的协议内容，不向界面转发。"""
+
+    content: str
+
+
+@dataclass(frozen=True, slots=True)
 class ToolCallRequest:
     """表示模型通过函数调用发起的一次工具请求。"""
 
@@ -46,7 +53,7 @@ class UsageUpdate:
     total_tokens: int
 
 
-StreamEvent = TextDelta | ToolCallRequest | UsageUpdate
+StreamEvent = TextDelta | ReasoningDelta | ToolCallRequest | UsageUpdate
 
 
 class ChatModel(Protocol):

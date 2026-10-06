@@ -15,6 +15,7 @@ from .journal import RecoveryIssue, RunJournal, RunJournalError
 from .tool_execution import (
     ToolExecutionRecord,
     ToolExecutionStart,
+    ToolExecutionInterrupted,
     ToolExecutor,
 )
 from .memory import (
@@ -25,7 +26,7 @@ from .memory import (
     SessionCoordinator,
     SessionStoreError,
 )
-from .models import ChatModel, DeepSeekModel, TextDelta, ToolCallRequest
+from .models import ChatModel, DeepSeekModel, ReasoningDelta, TextDelta, ToolCallRequest
 from .observability import RuntimeMetrics
 from .plan_runtime import PlanRuntime
 from .permissions import ConsoleToolConfirmer, ToolConfirmer
@@ -92,6 +93,8 @@ class TurnProgress:
     plan_checkpoint: TaskPlan | None
     steps_completed: int = 0
     force_plan_continuation: bool = False
+    reasoning_content: str = ""
+    plan_pause_reached: bool = False
 
 
 class Agent:
@@ -242,6 +245,10 @@ class Agent:
         except AgentCancelledError as error:
             self._handle_cancelled_turn(error, progress)
             raise
+        except KeyboardInterrupt as error:
+            cancelled = AgentCancelledError("本轮对话已停止。")
+            self._handle_cancelled_turn(cancelled, progress)
+            raise cancelled from error
         except Exception as error:
             self._handle_failed_turn(error, progress)
             raise
@@ -275,7 +282,9 @@ class Agent:
             )
             progress.steps_completed += 1
 
-            if tool_requests and self._single_step_boundary_reached():
+            if tool_requests and (
+                self._single_step_boundary_reached() or progress.plan_pause_reached
+            ):
                 return self._finish_single_step_boundary(
                     answer_parts,
                     progress,
@@ -295,6 +304,7 @@ class Agent:
             self._conversation.add_assistant_tool_calls(
                 [request.as_message_dict() for request in tool_requests],
                 content="".join(answer_parts) or None,
+                reasoning_content=progress.reasoning_content,
             )
             self._execute_tools(
                 tool_requests,
@@ -304,6 +314,9 @@ class Agent:
                 should_cancel=callbacks.should_cancel,
             )
             progress.force_plan_continuation = False
+            progress.plan_pause_reached = (
+                self._current_plan is not None and self._current_plan.waiting_for_user
+            )
 
         return self._run_finalization_loop(progress, callbacks)
 
@@ -321,6 +334,11 @@ class Agent:
             )
             progress.steps_completed += 1
 
+            if tool_requests and (
+                self._single_step_boundary_reached() or progress.plan_pause_reached
+            ):
+                return self._finish_single_step_boundary(answer_parts, progress, callbacks)
+
             if any(request.name != "update_plan" for request in tool_requests):
                 return self._finish_step_limit(progress, callbacks)
 
@@ -328,6 +346,7 @@ class Agent:
                 self._conversation.add_assistant_tool_calls(
                     [request.as_message_dict() for request in tool_requests],
                     content="".join(answer_parts) or None,
+                    reasoning_content=progress.reasoning_content,
                 )
                 self._execute_tools(
                     tool_requests,
@@ -337,6 +356,9 @@ class Agent:
                     should_cancel=callbacks.should_cancel,
                 )
                 progress.force_plan_continuation = False
+                progress.plan_pause_reached = (
+                    self._current_plan is not None and self._current_plan.waiting_for_user
+                )
                 continue
 
             outcome = self._handle_text_response(
@@ -359,6 +381,8 @@ class Agent:
         """收集一次模型响应，并立即转发文本增量事件。"""
         self._raise_if_cancelled(callbacks.should_cancel)
         answer_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        progress.reasoning_content = ""
         tool_requests: list[ToolCallRequest] = []
         model_messages = self._prepare_model_messages(
             force_plan_continuation=progress.force_plan_continuation,
@@ -376,8 +400,11 @@ class Agent:
             if isinstance(event, TextDelta):
                 self._emit_text(event.content, callbacks)
                 answer_parts.append(event.content)
+            elif isinstance(event, ReasoningDelta):
+                reasoning_parts.append(event.content)
             elif isinstance(event, ToolCallRequest):
                 tool_requests.append(event)
+        progress.reasoning_content = "".join(reasoning_parts)
         return answer_parts, tool_requests
 
     def _handle_text_response(
@@ -391,7 +418,7 @@ class Agent:
         if not answer:
             answer = "（模型未返回内容）"
             self._emit_text(answer, callbacks)
-        self._conversation.add_assistant(answer)
+        self._conversation.add_assistant(answer, reasoning_content=progress.reasoning_content)
 
         if self._has_active_execution_plan():
             current_plan = self._current_plan
@@ -430,7 +457,7 @@ class Agent:
         )
         if not answer_parts:
             self._emit_text(answer, callbacks)
-        self._conversation.add_assistant(answer)
+        self._conversation.add_assistant(answer, reasoning_content=progress.reasoning_content)
         status = (
             RunStatus.WAITING_USER
             if waiting_for_user
@@ -581,6 +608,7 @@ class Agent:
             self._turn_state.begin(turn_id)
             self._record_turn_started_safely(turn_id)
         records: list[ToolExecutionRecord] = []
+        pause_reached = self._single_step_boundary_reached()
         for request in requests:
             # 工具开始前需要检查停止信号。
             # 工具一旦开始执行就应完整结束，避免强行中断写入造成半写状态。
@@ -592,13 +620,21 @@ class Agent:
             )
             if on_tool_call is not None:
                 on_tool_call(request)
-            record = self._tool_executor.execute(
-                request,
-                on_confirmation_state=self._confirmation_callback(request),
-                before_execution=self._record_tool_started,
-                # GUI 的停止信号会继续传递给长时间运行的命令，而不只在工具之间检查。
-                should_cancel=should_cancel,
-            )
+            interrupted: ToolExecutionInterrupted | None = None
+            if pause_reached:
+                record = self._tool_executor.skip(request, "计划已到达暂停边界，本工具未执行。")
+            else:
+                try:
+                    record = self._tool_executor.execute(
+                        request,
+                        on_confirmation_state=self._confirmation_callback(request),
+                        before_execution=self._record_tool_started,
+                        should_cancel=should_cancel,
+                    )
+                except ToolExecutionInterrupted as error:
+                    # 工具可能已经生效：先记录真实的未知结果，再传播中断。
+                    record = error.record
+                    interrupted = error
             records.append(record)
             self._turn_state.add_tool_record(record)
 
@@ -614,6 +650,9 @@ class Agent:
                 AgentEvent.tool_call_completed(request, record),
             )
             if request.name == "update_plan" and record.status.succeeded:
+                pause_reached = self._single_step_boundary_reached() or (
+                    self._current_plan is not None and self._current_plan.waiting_for_user
+                )
                 # 计划事件必须在工具结果入历史后发送，确保回调失败时仍可恢复。
                 self._record_plan_updated_safely()
                 self._emit_event(
@@ -623,6 +662,8 @@ class Agent:
             # 界面回调发生异常时，已写入的工具结果仍可避免误回滚。
             if on_tool_result is not None:
                 on_tool_result(request, record.model_result)
+            if interrupted is not None:
+                raise interrupted
         return records
 
     def _confirmation_callback(
@@ -840,7 +881,7 @@ class Agent:
         force_plan_continuation: bool,
         finalization: bool = False,
     ) -> list[Message]:
-        """注入计划运行时约束，再按上下文预算裁剪消息。"""
+        """保留真实用户轮次；运行时控制消息参与预算但不创建新轮次。"""
         messages = self._plan_runtime.attach_to_messages(
             self._conversation.messages,
             force_continuation=force_plan_continuation,
@@ -853,7 +894,11 @@ class Agent:
                 + self._runtime_date_context(now_china())
             )
             messages[0] = first
-        return list(self._context_manager.prepare(messages).messages)
+        history_length = len(self._conversation.messages)
+        return list(self._context_manager.prepare(
+            messages[:history_length],
+            trailing_messages=messages[history_length:],
+        ).messages)
 
     @staticmethod
     def _runtime_date_context(current: datetime) -> str:

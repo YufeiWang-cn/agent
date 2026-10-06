@@ -161,6 +161,9 @@ class RunCommandTool(Tool):
                 stderr, stderr_truncated = self._read_output(
                     cast(BinaryIO, stderr_file)
                 )
+            except KeyboardInterrupt:
+                self._terminate_process(process)
+                raise
             finally:
                 self._command_executor.cleanup(prepared)
 

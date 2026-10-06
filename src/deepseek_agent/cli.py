@@ -1,6 +1,6 @@
 """实现 Agent 的交互式命令行界面和会话管理命令。"""
 
-from .agent import Agent
+from .agent import Agent, AgentCancelledError
 from .config import PROJECT_ROOT, Settings
 from .conversation import Message
 from .memory import ProjectStoreError, SessionStoreError
@@ -132,6 +132,11 @@ class CliApplication:
                 print()
             if outcome.status is RunStatus.WAITING_USER:
                 print("[等待输入] 当前计划已暂停，请根据上方问题继续回复。")
+        except AgentCancelledError as error:
+            if started_output:
+                print()
+            detail = "已执行工具的记录已保留。" if error.tool_records_preserved else "本轮已取消。"
+            print(f"\n[已停止] {detail}")
         except Exception as error:
             if started_output:
                 print()

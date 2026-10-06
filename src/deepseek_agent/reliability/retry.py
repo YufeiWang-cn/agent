@@ -11,6 +11,7 @@ from ..conversation import Message
 from ..context.estimator import estimate_messages_tokens, estimate_text_tokens
 from ..models.base import (
     ChatModel,
+    ReasoningDelta,
     StreamEvent,
     TextDelta,
     ToolCallRequest,
@@ -187,7 +188,7 @@ class RetryingChatModel:
 
     @staticmethod
     def _event_token_text(event: StreamEvent) -> str:
-        if isinstance(event, TextDelta):
+        if isinstance(event, (TextDelta, ReasoningDelta)):
             return event.content
         if isinstance(event, ToolCallRequest):
             return json.dumps(

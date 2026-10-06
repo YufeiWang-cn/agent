@@ -21,7 +21,7 @@ class ConsoleToolConfirmer:
         while True:
             try:
                 answer = input("允许执行吗？[y/N]：").strip().lower()
-            except (EOFError, KeyboardInterrupt):
+            except EOFError:
                 print()
                 return False
 

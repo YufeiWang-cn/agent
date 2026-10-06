@@ -27,6 +27,7 @@ class ToolExecutionStatus(str, Enum):
     REJECTED = "rejected"
     FAILED = "failed"
     RESULT_UNKNOWN = "result_unknown"
+    SKIPPED = "skipped"
 
     @property
     def succeeded(self) -> bool:
@@ -99,6 +100,14 @@ class ToolExecutionRecord:
 Clock = Callable[[], datetime]
 ConfirmationStateCallback = Callable[[bool], None]
 BeforeExecutionCallback = Callable[[ToolExecutionStart], None]
+
+
+class ToolExecutionInterrupted(KeyboardInterrupt):
+    """携带中断前的工具记录，让 Agent 能先保存再停止。"""
+
+    def __init__(self, record: ToolExecutionRecord) -> None:
+        super().__init__(record.model_result)
+        self.record = record
 
 
 class ToolExecutor:
@@ -219,6 +228,24 @@ class ToolExecutor:
                 confirmation_granted=confirmation_granted,
                 execution_started=True,
             )
+        except KeyboardInterrupt as error:
+            side_effect_possible = execution_started and effect is not ToolEffect.READ_ONLY
+            record = self._record(
+                request,
+                tool=tool,
+                effect=effect,
+                arguments=arguments,
+                status=(ToolExecutionStatus.RESULT_UNKNOWN
+                        if side_effect_possible else ToolExecutionStatus.FAILED),
+                model_result=("工具执行被中断，结果未知，请检查实际状态。"
+                              if side_effect_possible else "工具执行已取消。"),
+                started_at=started_at,
+                confirmation_requested=confirmation_requested,
+                confirmation_granted=confirmation_granted,
+                execution_started=execution_started,
+                error_message="用户中断了工具调用。",
+            )
+            raise ToolExecutionInterrupted(record) from error
         except ToolExecutionError as error:
             status = (
                 ToolExecutionStatus.RESULT_UNKNOWN
@@ -282,6 +309,15 @@ class ToolExecutor:
         """在调用方需要同步运行状态时通知确认阶段的开始或结束。"""
         if callback is not None:
             callback(waiting)
+
+    def skip(self, request: ToolCallRequest, reason: str) -> ToolExecutionRecord:
+        """不解析、不确认或执行已越过计划边界的请求，闭合其消息链。"""
+        return self._record(
+            request, tool=None, effect=ToolEffect.READ_ONLY, arguments=None,
+            status=ToolExecutionStatus.SKIPPED, model_result=reason,
+            started_at=self._clock(), confirmation_requested=False,
+            confirmation_granted=None, execution_started=False,
+        )
 
     @staticmethod
     def _raise_if_cancellation_requested(

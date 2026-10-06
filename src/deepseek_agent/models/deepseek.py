@@ -10,6 +10,7 @@ from ..config import Settings
 from ..conversation import Message
 from .base import (
     ModelProtocolError,
+    ReasoningDelta,
     StreamEvent,
     TextDelta,
     ToolCallRequest,
@@ -96,6 +97,14 @@ class DeepSeekModel:
         }
         if tools:
             request["tools"] = list(tools)
+        # 旧会话无法恢复原始协议内容；保留历史，并在本次请求禁用思考模式。
+        # 新产生的回复会完整记录 reasoning_content，不需要丢弃已有对话。
+        if any(
+            message.get("role") == "assistant"
+            and not isinstance(message.get("reasoning_content"), str)
+            for message in messages
+        ):
+            request["extra_body"] = {"thinking": {"type": "disabled"}}
 
         response = self._client.chat.completions.create(**request)
         # SDK 会把同一个工具调用拆成多个增量，因此需要按索引重新拼接。
@@ -130,6 +139,9 @@ class DeepSeekModel:
             delta = choice.delta
             if delta is None:
                 continue
+            reasoning = getattr(delta, "reasoning_content", None)
+            if isinstance(reasoning, str) and reasoning:
+                yield ReasoningDelta(reasoning)
             if delta.content:
                 yield TextDelta(delta.content)
 

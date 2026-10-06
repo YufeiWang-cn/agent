@@ -33,14 +33,24 @@ class ContextManager:
     def max_tokens(self) -> int:
         return self._max_tokens
 
-    def prepare(self, messages: list[Message]) -> ContextWindow:
-        """生成上下文快照，并始终保留可能超出预算的最新轮次。"""
-        if not messages:
+    def prepare(
+        self,
+        messages: list[Message],
+        *,
+        trailing_messages: list[Message] | None = None,
+    ) -> ContextWindow:
+        """裁剪真实对话轮次，再附加不构成新轮次的运行时控制消息。
+
+        控制消息计入预算，但不能取代最新真实用户轮次。最新轮次即使
+        超出软预算也完整保留，避免丢失目标或拆散工具调用和结果。
+        """
+        trailing = trailing_messages or []
+        if not messages and not trailing:
             return ContextWindow([], 0, 0, 0)
 
         system_messages, turns = self._split_into_turns(messages)
         selected_turns: list[list[Message]] = []
-        selected_tokens = estimate_messages_tokens(system_messages)
+        selected_tokens = estimate_messages_tokens(system_messages + trailing)
 
         for turn in reversed(turns):
             turn_tokens = estimate_messages_tokens(turn)
@@ -55,20 +65,20 @@ class ContextManager:
             message
             for turn in selected_turns
             for message in turn
-        ]
-        total_tokens = estimate_messages_tokens(messages)
+        ] + trailing
+        total_tokens = estimate_messages_tokens(messages + trailing)
         return ContextWindow(
             messages=deepcopy(selected_messages),
             estimated_tokens=selected_tokens,
             total_estimated_tokens=total_tokens,
-            omitted_messages=len(messages) - len(selected_messages),
+            omitted_messages=len(messages) + len(trailing) - len(selected_messages),
         )
 
     @staticmethod
     def _split_into_turns(
         messages: list[Message],
     ) -> tuple[list[Message], list[list[Message]]]:
-        if messages[0].get("role") == "system":
+        if messages and messages[0].get("role") == "system":
             system_messages = [messages[0]]
             remaining_messages = messages[1:]
         else:

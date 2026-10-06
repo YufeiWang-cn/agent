@@ -37,13 +37,20 @@ class Conversation:
     def add_user(self, content: str) -> None:
         self.messages.append({"role": "user", "content": content})
 
-    def add_assistant(self, content: str) -> None:
-        self.messages.append({"role": "assistant", "content": content})
+    def add_assistant(
+        self, content: str, *, reasoning_content: str | None = None,
+    ) -> None:
+        message: Message = {"role": "assistant", "content": content}
+        if reasoning_content is not None:
+            message["reasoning_content"] = reasoning_content
+        self.messages.append(message)
 
     def add_assistant_tool_calls(
         self,
         tool_calls: list[dict[str, Any]],
         content: str | None = None,
+        *,
+        reasoning_content: str | None = None,
     ) -> None:
         self.messages.append(
             {
@@ -52,6 +59,8 @@ class Conversation:
                 "tool_calls": tool_calls,
             }
         )
+        if reasoning_content is not None:
+            self.messages[-1]["reasoning_content"] = reasoning_content
 
     def add_tool_result(self, tool_call_id: str, name: str, content: str) -> None:
         self.messages.append(

@@ -132,11 +132,12 @@ class ToolConfirmationTests(unittest.TestCase):
         with patch("builtins.input", return_value=""):
             self.assertFalse(confirmer.confirm(tool, "{}"))
 
-    def test_console_confirmer_rejects_interruption(self) -> None:
+    def test_console_confirmer_propagates_interruption_for_turn_cleanup(self) -> None:
         tool = RecordingTool(requires_confirmation=True)
         confirmer = ConsoleToolConfirmer()
         with patch("builtins.input", side_effect=KeyboardInterrupt):
-            self.assertFalse(confirmer.confirm(tool, "{}"))
+            with self.assertRaises(KeyboardInterrupt):
+                confirmer.confirm(tool, "{}")
 
     def test_console_confirmer_displays_patch_diff_as_plain_text(self) -> None:
         tool = RecordingTool(requires_confirmation=True)
