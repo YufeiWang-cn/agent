@@ -33,6 +33,25 @@ class RunJournalTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
+    def test_old_run_files_are_pruned_to_retention_limit(self) -> None:
+        """目录只保留最新一批运行日志，启动扫描成本有界。"""
+        import os
+        from unittest.mock import patch
+
+        from deepseek_agent import journal as journal_module
+
+        for index in range(5):
+            path = self.directory / f"run_old_{index}.jsonl"
+            path.write_text("{}\n", encoding="utf-8")
+            # 依次变旧，run_old_0 最旧。
+            os.utime(path, (1_000_000_000 + index, 1_000_000_000 + index))
+
+        with patch.object(journal_module, "MAX_RETAINED_RUN_FILES", 3):
+            journal_module.RunJournal(self.directory, durable=False)
+
+        remaining = sorted(path.name for path in self.directory.glob("run_old_*.jsonl"))
+        self.assertEqual(remaining, ["run_old_2.jsonl", "run_old_3.jsonl", "run_old_4.jsonl"])
+
     @staticmethod
     def start() -> ToolExecutionStart:
         return ToolExecutionStart(

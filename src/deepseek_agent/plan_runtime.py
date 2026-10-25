@@ -105,9 +105,11 @@ class PlanRuntime:
         finalization: bool = False,
     ) -> list[Message]:
         """把计划快照作为临时约束注入模型消息，不修改会话历史。"""
-        prepared = [dict(message) for message in messages]
-        if not prepared:
-            return prepared
+        if not messages:
+            return []
+        # 只有首条消息会被改写，其余消息原样引用即可；
+        # 全量浅拷贝会让按对象身份缓存的 token 估算全部失效。
+        prepared = [messages[0], *messages[1:]]
 
         finalization_message = (
             "[运行时控制] 常规执行步数已经用尽，现在只能收尾。"

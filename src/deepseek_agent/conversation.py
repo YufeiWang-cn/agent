@@ -52,15 +52,16 @@ class Conversation:
         *,
         reasoning_content: str | None = None,
     ) -> None:
-        self.messages.append(
-            {
-                "role": "assistant",
-                "content": content,
-                "tool_calls": tool_calls,
-            }
-        )
+        # 一次构造完整消息再 append；先 append 再补字段会让"按对象身份缓存"
+        # 的 token 估算读到半成品消息。
+        message: Message = {
+            "role": "assistant",
+            "content": content,
+            "tool_calls": tool_calls,
+        }
         if reasoning_content is not None:
-            self.messages[-1]["reasoning_content"] = reasoning_content
+            message["reasoning_content"] = reasoning_content
+        self.messages.append(message)
 
     def add_tool_result(self, tool_call_id: str, name: str, content: str) -> None:
         self.messages.append(

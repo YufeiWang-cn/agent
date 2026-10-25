@@ -93,6 +93,32 @@ class JsonSessionStoreTests(unittest.TestCase):
 
         self.assertEqual([session.id for session in sessions], [newer.id, older.id])
 
+    def test_list_sessions_cache_refreshes_after_save(self) -> None:
+        """缓存命中提速的同时，保存后的修改必须立刻可见。"""
+        session = Session.create([{"role": "system", "content": "system"}])
+        session.title = "旧标题"
+        self.store.save(session)
+        self.assertEqual(self.store.list_sessions()[0].title, "旧标题")
+
+        session.title = "新标题"
+        self.store.save(session)
+
+        self.assertEqual(self.store.list_sessions()[0].title, "新标题")
+        self.assertEqual(self.store.load(session.id).title, "新标题")
+
+    def test_load_returns_exclusive_object_not_shared_with_cache(self) -> None:
+        """load 的对象被原地修改后不得污染 list_sessions 的缓存视图。"""
+        session = Session.create([{"role": "system", "content": "system"}])
+        self.store.save(session)
+        self.store.list_sessions()  # 填充缓存
+
+        loaded = self.store.load(session.id)
+        loaded.title = "被调用方修改的标题"
+        loaded.move_to_project("should-not-leak")
+
+        self.assertEqual(self.store.list_sessions()[0].title, session.title)
+        self.assertIsNone(self.store.list_sessions()[0].project_id)
+
     def test_sessions_with_mixed_offsets_sort_by_actual_instant(self) -> None:
         earlier = Session.create([{"role": "system", "content": "system"}])
         later = Session.create([{"role": "system", "content": "system"}])

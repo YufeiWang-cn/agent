@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import os
 import threading
 from dataclasses import dataclass
@@ -17,6 +18,11 @@ from .timekeeping import now_china, timestamp_sort_key
 
 
 JOURNAL_VERSION = 1
+# 每次运行生成一个 JSONL 文件；没有保留策略时目录会无界增长，
+# 而启动时的恢复扫描要逐行解析全部历史文件。
+MAX_RETAINED_RUN_FILES = 300
+
+logger = logging.getLogger(__name__)
 
 
 class RunJournalError(RuntimeError):
@@ -78,6 +84,33 @@ class RunJournal:
         self._clock = clock or now_china
         self._durable = durable
         self._lock = threading.Lock()
+        self._prune_old_runs()
+
+    def _prune_old_runs(self) -> None:
+        """按数量保留最新的运行日志，保证目录和启动扫描成本有界。
+
+        清理失败只记录告警：保留策略不能阻塞 Agent 启动。
+        """
+        try:
+            paths = list(self._directory.glob("*.jsonl"))
+        except OSError:
+            return
+        excess = len(paths) - MAX_RETAINED_RUN_FILES
+        if excess <= 0:
+            return
+
+        def _mtime(path: Path) -> int:
+            try:
+                return path.stat().st_mtime_ns
+            except OSError:
+                return 0
+
+        paths.sort(key=_mtime, reverse=True)
+        for path in paths[MAX_RETAINED_RUN_FILES:]:
+            try:
+                path.unlink()
+            except OSError:
+                logger.warning("无法清理旧运行日志：%s", path.name)
 
     @property
     def run_id(self) -> str:

@@ -39,11 +39,17 @@ class PlanStepStatus(str, Enum):
     @property
     def terminal(self) -> bool:
         """返回该状态是否已经结束且不可回退。"""
-        return self in {
-            PlanStepStatus.COMPLETED,
-            PlanStepStatus.FAILED,
-            PlanStepStatus.SKIPPED,
-        }
+        return self in _TERMINAL_STEP_STATUSES
+
+
+# 终态集合固定不变，提为模块级常量避免每次属性访问都新建 set。
+_TERMINAL_STEP_STATUSES = frozenset(
+    {
+        PlanStepStatus.COMPLETED,
+        PlanStepStatus.FAILED,
+        PlanStepStatus.SKIPPED,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,5 +1,6 @@
 """统一管理工具调用的解析、确认、执行和结果记录生命周期。"""
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -18,6 +19,8 @@ from .tools import (
     ToolExecutionError,
     ToolRegistry,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ToolExecutionStatus(str, Enum):
@@ -280,6 +283,13 @@ class ToolExecutor:
                 error_message=str(error),
             )
         except Exception as error:
+            # 未预期异常在这里被折叠成结构化记录，完整堆栈只能进日志，
+            # 否则线上排障只能看到一行错误文案。
+            logger.exception(
+                "工具发生未预期错误 tool=%s call_id=%s",
+                request.name,
+                request.id,
+            )
             write_tool = tool is not None and effect is not ToolEffect.READ_ONLY
             side_effect_possible = execution_started and write_tool
             status = (
