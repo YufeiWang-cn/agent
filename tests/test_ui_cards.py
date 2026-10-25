@@ -309,6 +309,34 @@ class UiCardTests(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_tool_card_uses_structured_status_over_result_text(self) -> None:
+        """实时路径按结构化状态判定失败，不依赖文案前缀。"""
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk 不可用：{error}")
+        root.withdraw()
+        try:
+            chat = tk.Text(root, width=80, height=20)
+            chat.pack()
+            card = ToolCallCard(chat, "run_command", "{}")
+
+            # 文案不含失败前缀，但结构化状态是失败，必须显示失败。
+            card.set_result("命令输出看起来正常", status="failed")
+            self.assertEqual(card._status.cget("text"), "失败")
+
+            # 结果未知同样按失败样式提示。
+            card.set_result("已启动但结果未知", status="result_unknown")
+            self.assertEqual(card._status.cget("text"), "失败")
+
+            # 会话恢复路径（无状态）回退到文案前缀判断。
+            card.set_result("工具执行失败：命令超时")
+            self.assertEqual(card._status.cget("text"), "失败")
+            card.set_result("执行成功")
+            self.assertEqual(card._status.cget("text"), "已完成")
+        finally:
+            root.destroy()
+
     def test_tool_card_destroy_closes_fullscreen_viewer_callbacks(self) -> None:
         try:
             root = tk.Tk()

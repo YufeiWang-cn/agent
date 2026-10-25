@@ -52,6 +52,26 @@ class SessionCoordinatorTests(unittest.TestCase):
         self.assertEqual(saved.plan, plan)
         self.assertEqual(saved.messages, self.conversation.messages)
 
+    def test_save_current_isolates_snapshot_from_later_conversation_changes(self) -> None:
+        """保存后的会话快照不得随对话的后续修改一起变化。"""
+        self.conversation.add_user("第一条消息")
+        self.coordinator.save_current(None)
+        snapshot = self.coordinator.current
+
+        self.conversation.add_user("第二条消息")
+        self.coordinator.save_current(None)
+
+        # 旧快照仍停留在保存时刻的消息，新快照包含完整对话。
+        self.assertEqual(len(snapshot.messages), 2)
+        self.assertEqual(len(self.coordinator.current.messages), 3)
+        # 快照内消息与对话消息是不同对象，原地修改互不影响。
+        self.assertIsNot(
+            self.coordinator.current.messages[1],
+            self.conversation.messages[1],
+        )
+        persisted = self.session_store.load(self.coordinator.current.id)
+        self.assertEqual(len(persisted.messages), 3)
+
     def test_start_load_and_clear_commit_matching_memory_state(self) -> None:
         first_id = self.coordinator.current.id
         self.conversation.add_user("第一条消息")

@@ -3,6 +3,7 @@
 import json
 import tkinter as tk
 
+from ..tool_execution import ToolExecutionStatus
 from .editor import EditorTabs, SyntaxText
 from .formatting import _content_language_hint
 from .theme import (
@@ -307,9 +308,18 @@ class ToolCallCard:
             )
         self._bind_mousewheel(self.frame)
 
-    def set_result(self, result: str) -> None:
+    def set_result(self, result: str, *, status: str | None = None) -> None:
         self._result = result
-        is_failure = result.startswith(("工具执行失败", "工具发生", "用户拒绝"))
+        if status is not None:
+            # 实时路径携带结构化状态，不依赖文案前缀。
+            is_failure = status in {
+                ToolExecutionStatus.FAILED.value,
+                ToolExecutionStatus.RESULT_UNKNOWN.value,
+                ToolExecutionStatus.REJECTED.value,
+            }
+        else:
+            # 会话恢复路径没有结构化状态，保留文案前缀兜底。
+            is_failure = result.startswith(("工具执行失败", "工具发生", "用户拒绝"))
         is_partial = self._is_partial_search_result(result)
         self._status.configure(
             text="失败" if is_failure else "部分完成" if is_partial else "已完成",

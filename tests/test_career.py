@@ -417,6 +417,31 @@ class CareerTests(unittest.TestCase):
         first.create_project("学生 A")
         self.assertEqual(second.list_projects(), [])
 
+    def test_runtime_context_cache_invalidates_on_data_or_user_change(self):
+        service = self.agent()._career
+        first = service.runtime_context()
+
+        # 数据与输入都没变时复用同一份缓存结果。
+        self.assertIs(service.runtime_context(), first)
+
+        # 事实变化（版本号自增）后必须重建。
+        service.current_user = "用户原话：缓存必须随事实更新失效。"
+        service.store.save_fact(
+            key="缓存/失效",
+            category="skill",
+            statement="缓存必须随事实更新失效",
+            source_id="current_user",
+            source_quote="缓存必须随事实更新失效",
+            current_user=service.current_user,
+        )
+        refreshed = service.runtime_context()
+        self.assertIsNot(refreshed, first)
+        self.assertIn("缓存必须随事实更新失效", refreshed)
+
+        # 本轮用户输入变化后同样重建。
+        service.current_user = "我补充了新的原话。"
+        self.assertIsNot(service.runtime_context(), refreshed)
+
     def test_runtime_reinjects_current_facts_with_budget_and_older_fact_retrieval(self):
         agent = self.agent()
         for index in range(35):

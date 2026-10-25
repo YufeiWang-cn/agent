@@ -588,12 +588,13 @@ class AgentApp:
         self._set_activity_phase(f"执行工具 {request.name}")
 
     def _handle_tool_result_event(self, payload: Any) -> None:
-        request, result = payload
+        request, result, status_value = payload
         self._conversation.complete_tool_card(
             request.id,
             request.name,
             request.arguments,
             result,
+            status=status_value,
         )
         self._set_activity_phase("继续生成")
 

@@ -149,8 +149,10 @@ class ConversationView(ttk.Frame):
         name: str,
         arguments: str,
         result: str,
+        *,
+        status: str | None = None,
     ) -> None:
-        self._complete_tool_card(tool_call_id, name, arguments, result)
+        self._complete_tool_card(tool_call_id, name, arguments, result, status=status)
 
     def show_plan(self, plan: TaskPlan | None) -> None:
         """显示当前计划快照，传入空值时隐藏计划区域。"""
@@ -399,18 +401,22 @@ class ConversationView(ttk.Frame):
         name: str,
         arguments: str,
         result: str,
+        *,
+        status: str | None = None,
     ) -> None:
         card = self._tool_cards.get(tool_call_id)
         if card is None:
             card = self._create_tool_card(tool_call_id, name, arguments)
-        card.set_result(result)
+        card.set_result(result, status=status)
 
     def _resize_tool_cards(self, event: tk.Event | None = None) -> None:
         if event is not None:
             self._pending_chat_width = event.width
             if self._resize_job is not None:
                 self._root.after_cancel(self._resize_job)
-            self._resize_job = self._root.after(40, self._flush_pending_resize)
+            # 拖动窗口时 Configure 会连续触发；中途重排嵌入卡片会在
+            # Windows 上留下未重绘的黑色残影。等拖动稳定后再统一应用。
+            self._resize_job = self._root.after(120, self._flush_pending_resize)
             return
         self._apply_embedded_width(self._chat_view.winfo_width())
 

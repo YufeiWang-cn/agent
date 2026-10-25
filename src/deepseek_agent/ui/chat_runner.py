@@ -28,9 +28,9 @@ class AgentChatRunner:
                 prompt,
                 on_text=lambda content: self._put("text", content),
                 on_tool_call=lambda request: self._put("tool_call", request),
-                on_tool_result=lambda request, result: self._put(
+                on_tool_result=lambda request, result, status: self._put(
                     "tool_result",
-                    (request, result),
+                    (request, result, status.value),
                 ),
                 on_event=self._queue_runtime_event,
                 should_cancel=self._cancel.is_set,

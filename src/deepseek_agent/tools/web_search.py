@@ -505,10 +505,13 @@ class WebSearchTool(Tool):
         groups: JsonObject = {}
         errors: JsonObject = {}
         futures: dict[Future[JsonObject], tuple[str, str, int]] = {}
-        with ThreadPoolExecutor(
+        # 不用 with 语句：退出时它会 shutdown(wait=True)，等两路 HTTP 全部
+        # 返回（最长一个超时周期）；取消时先停掉未启动的任务立即返回。
+        executor = ThreadPoolExecutor(
             max_workers=2,
             thread_name_prefix="web-search",
-        ) as executor:
+        )
+        try:
             for scope, (query, max_results) in requests.items():
                 future = executor.submit(
                     self._search_scope,
@@ -521,6 +524,9 @@ class WebSearchTool(Tool):
                 )
                 futures[future] = (scope, query, max_results)
             for future in as_completed(futures):
+                if context.should_cancel is not None and context.should_cancel():
+                    # 剩余 future 交给 finally 取消；已完成的照常收集。
+                    break
                 scope, query, max_results = futures[future]
                 try:
                     response = future.result()
@@ -536,6 +542,8 @@ class WebSearchTool(Tool):
                     # 任何一方的异常都不应丢弃另一方已成功的部分结果；
                     # 未预期的异常同样归入该 scope 的错误说明。
                     errors[scope] = str(error) or type(error).__name__
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
         self._raise_if_cancelled(context)
         if not groups:

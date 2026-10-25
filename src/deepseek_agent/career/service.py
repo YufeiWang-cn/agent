@@ -18,6 +18,18 @@ class CareerService:
         self.policy = (Path(__file__).parents[1] / "prompts" / "career.md").read_text(
             encoding="utf-8"
         )
+        # 运行时上下文每个模型步骤都会拼进系统提示，但内容只在
+        # 本轮用户输入或档案数据变化时才变；按 (数据版本, 用户输入) 缓存。
+        self._context_cache_key: tuple[int, str] | None = None
+        self._context_cache_value = ""
+
+    def runtime_context(self) -> str:
+        cache_key = (self.store.generation, self.current_user)
+        if self._context_cache_key == cache_key:
+            return self._context_cache_value
+        self._context_cache_key = cache_key
+        self._context_cache_value = self._build_runtime_context()
+        return self._context_cache_value
 
     def registry(self, existing: ToolRegistry) -> ToolRegistry:
         from .tools import (
@@ -41,9 +53,9 @@ class CareerService:
             ]
         )
 
-    def runtime_context(self) -> str:
-        # 每轮对话都会调用；事实索引最多 200 条，逐条追加后全量
-        # json.dumps 一次是 O(n²) 的重复序列化，这里改为增量累计长度。
+    def _build_runtime_context(self) -> str:
+        # 事实索引最多 200 条时，逐条追加后全量 json.dumps 是 O(n²) 的
+        # 重复序列化；这里改为增量累计长度。
         snapshot = self.store.snapshot(
             self.current_user,
             limit=8,

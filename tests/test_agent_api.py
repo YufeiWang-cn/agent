@@ -196,13 +196,13 @@ class AgentApiTests(unittest.TestCase):
         agent.chat(
             "计算",
             on_tool_call=lambda value: calls.append(value.name),
-            on_tool_result=lambda value, result: results.append(
-                f"{value.name}:{result}"
+            on_tool_result=lambda value, result, status: results.append(
+                f"{value.name}:{result}:{status.value}"
             ),
         )
 
         self.assertEqual(calls, ["calculator"])
-        self.assertEqual(results, ["calculator:5"])
+        self.assertEqual(results, ["calculator:5:succeeded"])
 
     def test_step_limit_is_not_reported_as_success(self) -> None:
         requests = [
@@ -282,7 +282,7 @@ class AgentApiTests(unittest.TestCase):
         model = CallbackModel([[request]])
         agent = Agent(self.settings, model=model, session_store=self.store)
 
-        def fail_after_tool(_request, _result: str) -> None:
+        def fail_after_tool(_request, _result: str, _status: object) -> None:
             raise RuntimeError("UI callback failed")
 
         with self.assertRaisesRegex(RuntimeError, "UI callback failed"):

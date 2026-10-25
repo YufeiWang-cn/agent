@@ -30,6 +30,8 @@ class CareerStore:
 
     def __init__(self, path: Path) -> None:
         self.path = path
+        # 进程内数据版本号：每次写操作自增，供运行时上下文等派生缓存失效。
+        self.generation = 0
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
@@ -95,6 +97,7 @@ class CareerStore:
             db.execute(
                 "INSERT INTO documents VALUES (:id,:kind,:title,:content,:created_at)", document
             )
+        self.generation += 1
         return document
 
     def document(self, document_id: str) -> Json:
@@ -192,6 +195,7 @@ class CareerStore:
                 "(:id,:fact_key,:category,:statement,:source_id,:source_quote,:revision,:updated_at)",
                 fact,
             )
+        self.generation += 1
         return fact
 
     def forget_fact(self, fact_id: str) -> None:
@@ -199,6 +203,7 @@ class CareerStore:
             if db.execute("DELETE FROM facts WHERE id=?", (fact_id,)).rowcount == 0:
                 raise CareerDataError("事实不存在于当前档案。")
             db.execute("DELETE FROM fact_history WHERE fact_id=?", (fact_id,))
+        self.generation += 1
 
     def snapshot(
         self,
@@ -317,6 +322,7 @@ class CareerStore:
                 "(:id,:resume_id,:job_id,:title,:markdown,:changes,:fact_revisions,:status,:created_at)",
                 review,
             )
+        self.generation += 1
         return self.review(review["id"])
 
     def review(self, review_id: str) -> Json:
@@ -347,6 +353,7 @@ class CareerStore:
             if decision == "accepted" and review["stale"]:
                 raise CareerDataError("报告引用的事实已更新或删除，请重新生成报告后再接受。")
             db.execute("UPDATE reviews SET status=? WHERE id=?", (decision, review_id))
+        self.generation += 1
         return self.review(review_id)
 
     def render_review(self, review_id: str) -> str:

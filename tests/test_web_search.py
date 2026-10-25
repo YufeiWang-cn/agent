@@ -84,6 +84,44 @@ class ParallelTransport:
         ).encode("utf-8")
 
 
+class HalfBlockingTransport:
+    """国际一路立即返回，国内一路阻塞直到放行，用于验证取消不被网络卡住。"""
+
+    def __init__(self) -> None:
+        self._release = threading.Event()
+        self.calls: list[dict[str, object]] = []
+        self._lock = threading.Lock()
+
+    def release(self) -> None:
+        self._release.set()
+
+    def __call__(
+        self,
+        body: bytes,
+        headers: Mapping[str, str],
+        timeout_seconds: float,
+    ) -> bytes:
+        del headers, timeout_seconds
+        request = json.loads(body.decode("utf-8"))
+        with self._lock:
+            self.calls.append(request)
+        query = str(request["query"])
+        if query == "人工智能进展":
+            self._release.wait(timeout=5)
+            raise URLError("domestic side aborted")
+        return json.dumps(
+            {
+                "results": [
+                    {
+                        "title": "international source",
+                        "url": "https://reuters.com/article",
+                        "content": "summary",
+                    }
+                ]
+            }
+        ).encode("utf-8")
+
+
 class QueryResponseTransport:
     """按查询返回不同响应，用于验证 balanced 汇总边界。"""
 
@@ -901,6 +939,29 @@ class WebSearchToolTests(unittest.TestCase):
                     "scope": "balanced",
                 }
             )
+
+    def test_balanced_cancel_returns_before_blocked_side_finishes(self) -> None:
+        """国际一路完成即检测取消，不等待国内一路的网络返回。"""
+        transport = HalfBlockingTransport()
+        tool = self.build_tool(transport)
+        arguments = {
+            "query": "人工智能进展",
+            "international_query": "artificial intelligence progress",
+            "scope": "balanced",
+        }
+
+        def should_cancel() -> bool:
+            # 国际一路已发起（第二条调用记录出现）后取消。
+            return len(transport.calls) >= 2
+
+        try:
+            with self.assertRaisesRegex(ToolExecutionError, "已取消"):
+                tool.execute_with_context(
+                    arguments,
+                    ToolExecutionContext(should_cancel=should_cancel),
+                )
+        finally:
+            transport.release()
 
     def test_balanced_search_uses_two_automatic_request_credits(self) -> None:
         tool = self.build_tool(RecordingTransport(), auto_calls_per_turn=2)

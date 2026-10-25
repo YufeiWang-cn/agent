@@ -17,6 +17,7 @@ from .journal import RecoveryIssue, RunJournal, RunJournalError
 from .tool_execution import (
     ToolExecutionRecord,
     ToolExecutionStart,
+    ToolExecutionStatus,
     ToolExecutionInterrupted,
     ToolExecutor,
 )
@@ -71,7 +72,8 @@ class AgentCancelledError(RuntimeError):
 
 TextCallback = Callable[[str], None]
 ToolCallCallback = Callable[[ToolCallRequest], None]
-ToolResultCallback = Callable[[ToolCallRequest, str], None]
+# 第三个参数是结构化执行状态；界面用它判断成败，不再解析结果文案前缀。
+ToolResultCallback = Callable[[ToolCallRequest, str, ToolExecutionStatus], None]
 AgentEventCallback = Callable[[AgentEvent], None]
 CancelCheck = Callable[[], bool]
 
@@ -701,7 +703,7 @@ class Agent:
                 )
             # 界面回调发生异常时，已写入的工具结果仍可避免误回滚。
             if on_tool_result is not None:
-                on_tool_result(request, record.model_result)
+                on_tool_result(request, record.model_result, record.status)
             if interrupted is not None:
                 raise interrupted
         return records

@@ -171,7 +171,11 @@ class CliApplication:
                 started_output = False
             print(f"\n[工具调用] {request.name} 参数：{request.arguments}")
 
-        def print_tool_result(_request: ToolCallRequest, result: str) -> None:
+        def print_tool_result(
+            _request: ToolCallRequest,
+            result: str,
+            _status: object,
+        ) -> None:
             print(f"[工具结果] {result}")
 
         def print_runtime_event(event: AgentEvent) -> None:

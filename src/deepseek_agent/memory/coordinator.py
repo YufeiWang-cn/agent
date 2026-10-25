@@ -1,5 +1,7 @@
 """协调对话内存、会话持久化和项目归属变更。"""
 
+from copy import deepcopy
+
 from ..conversation import Conversation, Message
 from ..planning import TaskPlan
 from .json_store import JsonSessionStore
@@ -161,8 +163,22 @@ class SessionCoordinator:
         return session
 
     def save_current(self, plan: TaskPlan | None) -> None:
-        """先保存候选副本，成功后再替换当前会话快照。"""
-        candidate = self._copy_session(self._current)
+        """先保存候选副本，成功后再替换当前会话快照。
+
+        候选对象只做一次消息深拷贝；原来 ``_copy_session`` 的序列化
+        往返加 ``update_messages`` 会把同一份历史全量拷贝多遍。
+        ``TaskPlan`` 不可变，直接共享引用。
+        """
+        current = self._current
+        candidate = Session(
+            id=current.id,
+            title=current.title,
+            created_at=current.created_at,
+            updated_at=current.updated_at,
+            project_id=current.project_id,
+            messages=deepcopy(self._conversation.messages),
+            plan=current.plan,
+        )
         if candidate.title == "新会话":
             first_user_message = next(
                 (
@@ -175,7 +191,6 @@ class SessionCoordinator:
             if first_user_message:
                 compact_title = " ".join(str(first_user_message).split())
                 candidate.title = compact_title[:30]
-        candidate.update_messages(self._conversation.messages)
         candidate.update_plan(plan)
         self._session_store.save(candidate)
         self._current = candidate

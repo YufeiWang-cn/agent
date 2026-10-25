@@ -66,13 +66,19 @@ class Session:
         self.updated_at = _now()
 
     def to_dict(self) -> dict[str, Any]:
+        """返回可直接序列化的数据视图。
+
+        调用方约定：返回值只用于 ``json.dumps`` 或传入
+        ``from_dict``（后者会自行深拷贝），因此这里不做消息深拷贝；
+        保存链路原本因此多出一次全量拷贝。
+        """
         return {
             "id": self.id,
             "title": self.title,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "project_id": self.project_id,
-            "messages": deepcopy(self.messages),
+            "messages": self.messages,
             "plan": self.plan.to_dict() if self.plan is not None else None,
         }
 
