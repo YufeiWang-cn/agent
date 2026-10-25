@@ -2,6 +2,7 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass
 from enum import Enum
 from time import monotonic
@@ -110,13 +111,17 @@ class Tool(ABC):
 
     @property
     def schema(self) -> JsonObject:
-        """把工具转换成 DeepSeek/OpenAI 函数调用所需的结构。"""
+        """把工具转换成 DeepSeek/OpenAI 函数调用所需的结构。
+
+        ``parameters`` 是类属性，schema 的消费方（模型请求、确认界面）
+        可能原地修改返回值；这里统一深拷贝，防止污染类级定义。
+        """
         return {
             "type": "function",
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": self.parameters,
+                "parameters": deepcopy(self.parameters),
             },
         }
 

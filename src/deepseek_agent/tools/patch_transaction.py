@@ -335,11 +335,19 @@ class PatchTransaction:
             try:
                 if change.original_content is None:
                     change.path.unlink(missing_ok=True)
-                else:
-                    self._guard.write_text(
-                        change.relative_path,
-                        change.original_content,
+                    continue
+                # 回滚写回前确认文件仍是本次写入的内容；批次期间的外部
+                # 修改不能被回滚静默覆盖，保留现场并显式报告。
+                _path, current_content = self._guard.read_text(change.relative_path)
+                if current_content != change.updated_content:
+                    errors.append(
+                        f"{change.relative_path}: 文件在回滚前被外部修改，已保留当前内容"
                     )
+                    continue
+                self._guard.write_text(
+                    change.relative_path,
+                    change.original_content,
+                )
             except Exception as error:
                 errors.append(f"{change.relative_path}: {error}")
         return errors

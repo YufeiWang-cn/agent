@@ -138,15 +138,21 @@ class RunCommandToolTests(unittest.TestCase):
 
     def test_output_is_capped_without_blocking_the_child(self) -> None:
         script = self.workspace / "large_output.py"
-        script.write_text("print('x' * 1000)", encoding="utf-8")
+        script.write_text(
+            "print('HEAD' + 'x' * 1000 + 'TAIL')\n", encoding="utf-8"
+        )
 
         result = json.loads(
             self.tool.execute({"command": ["python", "large_output.py"]})
         )
 
         self.assertEqual(result["exit_code"], 0)
-        self.assertEqual(len(result["stdout"].encode("utf-8")), 100)
+        # 超限输出保留头尾两端（报错堆栈在尾部），中间用省略标记衔接。
+        self.assertIn("HEAD", result["stdout"])
+        self.assertIn("TAIL", result["stdout"])
+        self.assertIn("已省略中间", result["stdout"])
         self.assertTrue(result["stdout_truncated"])
+        self.assertLess(len(result["stdout"].encode("utf-8")), 300)
 
     def test_sensitive_environment_values_are_not_inherited(self) -> None:
         script = self.workspace / "environment.py"

@@ -12,6 +12,21 @@ class EvalCaseError(ValueError):
     """表示评测案例文件格式无效。"""
 
 
+# 与运行时 RunStatus 对齐的合法期望状态；避免循环导入，这里按值声明。
+VALID_EXPECTED_STATUSES = frozenset(
+    {
+        "idle",
+        "running",
+        "waiting_approval",
+        "waiting_user",
+        "completed",
+        "cancelled",
+        "failed",
+        "step_limit_reached",
+    }
+)
+
+
 def _as_mapping(value: object, name: str) -> dict[str, object]:
     if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
         raise EvalCaseError(f"{name} 必须是 JSON 对象。")
@@ -218,6 +233,16 @@ class EvalCase:
         )
         if not statuses:
             raise EvalCaseError("案例.expected.statuses 不能为空。")
+        # 状态拼错（如 complete）会让用例永远失败且难以定位，加载时白名单校验。
+        unknown_statuses = [
+            status for status in statuses if status not in VALID_EXPECTED_STATUSES
+        ]
+        if unknown_statuses:
+            raise EvalCaseError(
+                "案例.expected.statuses 包含未知状态："
+                f"{'、'.join(unknown_statuses)}；"
+                f"合法值：{'、'.join(sorted(VALID_EXPECTED_STATUSES))}。"
+            )
         allowed_files = (
             None
             if "allowed_files_changed" not in expected

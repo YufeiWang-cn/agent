@@ -219,6 +219,32 @@ class EvaluationTests(unittest.TestCase):
                 with self.assertRaisesRegex(EvalCaseError, "相对文件路径"):
                     load_cases(case_path)
 
+    def test_case_loader_rejects_unknown_expected_status(self) -> None:
+        case_path = self.root / "case.json"
+        case_path.write_text(
+            json.dumps(
+                {
+                    "id": "sample",
+                    "prompt": "读取文件",
+                    "fixture": "fixture",
+                    "expected": {"statuses": ["complete"]},
+                }
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(EvalCaseError, "未知状态"):
+            load_cases(case_path)
+
+    def test_expected_status_whitelist_matches_runtime_enum(self) -> None:
+        """运行时新增状态时白名单必须同步，否则用例无法声明新期望。"""
+        from deepseek_agent.evaluation.models import VALID_EXPECTED_STATUSES
+        from deepseek_agent.runtime import RunStatus
+
+        self.assertEqual(
+            VALID_EXPECTED_STATUSES,
+            frozenset(status.value for status in RunStatus),
+        )
+
     def test_all_bundled_cases_are_valid(self) -> None:
         cases = load_cases(PROJECT_ROOT / "evals" / "cases")
 

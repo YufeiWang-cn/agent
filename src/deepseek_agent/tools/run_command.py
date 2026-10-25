@@ -236,8 +236,19 @@ class RunCommandTool(Tool):
         stream.seek(0, os.SEEK_END)
         size = stream.tell()
         stream.seek(0)
-        content = stream.read(self._max_output_bytes)
-        return content.decode("utf-8", errors="replace"), size > self._max_output_bytes
+        truncated = size > self._max_output_bytes
+        if not truncated:
+            return stream.read().decode("utf-8", errors="replace"), False
+        # 报错堆栈几乎都在输出尾部，只保留头部会把关键信息截掉；
+        # 这里前半加后半拼接，中间以省略标记衔接。
+        head_budget = self._max_output_bytes * 3 // 4
+        tail_budget = self._max_output_bytes - head_budget
+        head = stream.read(head_budget).decode("utf-8", errors="replace")
+        stream.seek(max(0, size - tail_budget))
+        tail = stream.read().decode("utf-8", errors="replace")
+        omitted = size - head_budget - tail_budget
+        marker = f"\n...[输出超限，已省略中间 {omitted} 字节]...\n"
+        return head + marker + tail, True
 
     @staticmethod
     def _safe_environment() -> dict[str, str]:

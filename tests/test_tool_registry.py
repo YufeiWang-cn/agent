@@ -25,6 +25,17 @@ class ToolRegistryTests(unittest.TestCase):
         names = [schema["function"]["name"] for schema in self.registry.schemas]
         self.assertEqual(names, ["calculator", "get_current_time"])
 
+    def test_schema_mutation_does_not_pollute_tool_definition(self) -> None:
+        """parameters 是类属性；消费方改 schema 不得影响工具定义。"""
+        calculator = self.registry.get("calculator")
+        before = json.dumps(calculator.parameters, sort_keys=True)
+
+        schema = calculator.schema
+        schema["function"]["parameters"]["properties"]["expression"]["type"] = "hacked"
+        schema["function"]["parameters"].pop("required", None)
+
+        self.assertEqual(json.dumps(calculator.parameters, sort_keys=True), before)
+
     def test_tool_metadata_describes_execution_policy(self) -> None:
         calculator = self.registry.get("calculator")
 
@@ -34,29 +45,29 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertFalse(calculator.supports_rollback)
 
     def test_json_arguments_are_dispatched(self) -> None:
-        result = self.registry.execute("calculator", '{"expression":"12 * 3"}')
-        self.assertEqual(result, "36")
+        tool, arguments = self.registry.prepare(
+            "calculator", '{"expression":"12 * 3"}'
+        )
+        self.assertEqual(tool.execute(arguments), "36")
 
     def test_invalid_json_is_rejected(self) -> None:
         with self.assertRaises(ToolExecutionError):
-            self.registry.execute("calculator", "{invalid")
+            self.registry.prepare("calculator", "{invalid")
 
     def test_unknown_tool_is_rejected(self) -> None:
         with self.assertRaises(ToolNotFoundError):
-            self.registry.execute("missing", "{}")
+            self.registry.prepare("missing", "{}")
 
     def test_current_time_returns_structured_data(self) -> None:
-        result = json.loads(
-            self.registry.execute(
-                "get_current_time", '{"timezone":"Asia/Shanghai"}'
-            )
+        tool, arguments = self.registry.prepare(
+            "get_current_time", '{"timezone":"Asia/Shanghai"}'
         )
+        result = json.loads(tool.execute(arguments))
         self.assertEqual(result["timezone"], "Asia/Shanghai")
         self.assertIn("datetime", result)
 
-        default_result = json.loads(
-            self.registry.execute("get_current_time", "{}")
-        )
+        tool, arguments = self.registry.prepare("get_current_time", "{}")
+        default_result = json.loads(tool.execute(arguments))
         self.assertEqual(default_result["timezone"], "Asia/Shanghai")
         self.assertTrue(default_result["datetime"].endswith("+08:00"))
 

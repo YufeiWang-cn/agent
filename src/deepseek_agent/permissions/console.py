@@ -5,6 +5,18 @@ import json
 from ..tools import Tool
 
 
+# 终端预览的长度上限：超大补丁全文打印既刷屏，也可能把参数里
+# 混入的凭据原样暴露在终端记录中。
+MAX_PREVIEW_CHARACTERS = 2_000
+
+
+def _clip_preview(text: str) -> str:
+    if len(text) <= MAX_PREVIEW_CHARACTERS:
+        return text
+    omitted = len(text) - MAX_PREVIEW_CHARACTERS
+    return f"{text[:MAX_PREVIEW_CHARACTERS]}\n...[内容过长，已省略后 {omitted} 字符]..."
+
+
 class ConsoleToolConfirmer:
     """通过终端输入确认可能产生副作用的工具调用。"""
 
@@ -14,10 +26,13 @@ class ConsoleToolConfirmer:
             "\n[需要确认]\n"
             f"工具：{tool.name}\n"
             f"说明：{tool.description}\n"
-            f"参数：{formatted_arguments}"
+            f"参数：{_clip_preview(formatted_arguments)}"
         )
         if diff:
-            print(f"修改差异：\n{diff}", end="" if diff.endswith("\n") else "\n")
+            print(
+                f"修改差异：\n{_clip_preview(diff)}",
+                end="" if diff.endswith("\n") else "\n",
+            )
         while True:
             try:
                 answer = input("允许执行吗？[y/N]：").strip().lower()

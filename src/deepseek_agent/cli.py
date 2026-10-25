@@ -15,10 +15,19 @@ from .planning import (
     PlanStepStatus,
     TaskPlan,
 )
+from .permissions.console import MAX_PREVIEW_CHARACTERS
 from .runtime import AgentEvent, AgentEventType, RunStatus
 
 
 EXIT_COMMANDS = {"/exit", "exit", "quit", "q", "退出"}
+
+
+def _clip(text: str) -> str:
+    """截断终端打印：工具输出动辄上万字符，全文打印会刷屏。"""
+    if len(text) <= MAX_PREVIEW_CHARACTERS:
+        return text
+    omitted = len(text) - MAX_PREVIEW_CHARACTERS
+    return f"{text[:MAX_PREVIEW_CHARACTERS]}\n...[内容过长，已省略后 {omitted} 字符]..."
 
 
 class CliApplication:
@@ -169,14 +178,14 @@ class CliApplication:
             if started_output:
                 print()
                 started_output = False
-            print(f"\n[工具调用] {request.name} 参数：{request.arguments}")
+            print(f"\n[工具调用] {request.name} 参数：{_clip(request.arguments)}")
 
         def print_tool_result(
             _request: ToolCallRequest,
             result: str,
             _status: object,
         ) -> None:
-            print(f"[工具结果] {result}")
+            print(f"[工具结果] {_clip(result)}")
 
         def print_runtime_event(event: AgentEvent) -> None:
             if event.type is AgentEventType.PLAN_UPDATED and event.plan is not None:
