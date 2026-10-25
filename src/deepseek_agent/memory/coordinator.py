@@ -90,7 +90,8 @@ class SessionCoordinator:
         candidate.update_messages(cleared_messages)
         candidate.update_plan(None)
         self._session_store.save(candidate)
-        self._conversation.restore(cleared_messages)
+        # cleared_messages 是本方法新建的独占列表，可直接接管。
+        self._conversation.restore(cleared_messages, copy=False)
         self._current = candidate
         return candidate
 
@@ -103,7 +104,8 @@ class SessionCoordinator:
         self.save_current(current_plan)
         session = self._session_store.load(session_id)
         # 对话结构验证必须先于当前会话指针的切换。
-        self._conversation.restore(session.messages)
+        # load 返回独占对象，接管消息可省一次全量深拷贝。
+        self._conversation.restore(session.messages, copy=False)
         self._current = session
         return session
 
@@ -130,7 +132,8 @@ class SessionCoordinator:
                 pass
             raise
 
-        self._conversation.restore(replacement.messages)
+        # Session.create 返回独占对象，接管消息省一次拷贝。
+        self._conversation.restore(replacement.messages, copy=False)
         self._current = replacement
         return deleted_id
 
@@ -199,6 +202,7 @@ class SessionCoordinator:
         latest = self._session_store.latest()
         if latest is not None:
             try:
+                # latest 可能来自列表缓存并被其他调用方共享，必须深拷贝。
                 self._conversation.restore(latest.messages)
                 return latest
             except ValueError:
@@ -207,7 +211,8 @@ class SessionCoordinator:
 
     def _start_new_session(self, project_id: str | None = None) -> Session:
         session = self._create_new_session(project_id)
-        self._conversation.restore(session.messages)
+        # Session.create 返回独占对象，接管消息省一次拷贝。
+        self._conversation.restore(session.messages, copy=False)
         self._current = session
         return session
 

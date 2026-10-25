@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -416,6 +417,35 @@ class CareerTests(unittest.TestCase):
         self.assertNotEqual(first.session_id, second.session_id)
         first.create_project("学生 A")
         self.assertEqual(second.list_projects(), [])
+
+    def test_fact_history_is_capped_per_fact(self) -> None:
+        """反复修订不会让 fact_history 无限膨胀。"""
+        with sqlite3.connect(self.store.path) as db:
+            history_count = db.execute(
+                "SELECT COUNT(*) FROM fact_history WHERE fact_id=?",
+                (self.fact["id"],),
+            ).fetchone()[0]
+        self.assertEqual(history_count, 0)
+
+        quote = "参与 Agent 项目，负责工具调用和后端接口。"
+        for revision in range(15):
+            self.store.save_fact(
+                key="agent项目/职责",
+                category="project",
+                statement=f"第 {revision + 1} 版修订。",
+                source_id=self.resume["id"],
+                source_quote=quote,
+            )
+
+        with sqlite3.connect(self.store.path) as db:
+            rows = db.execute(
+                "SELECT revision FROM fact_history WHERE fact_id=? ORDER BY revision",
+                (self.fact["id"],),
+            ).fetchall()
+        revisions = [row[0] for row in rows]
+        self.assertEqual(len(revisions), 10)
+        # 保留的是最近 10 版：第 6 到第 15 次修订的旧值。
+        self.assertEqual(revisions, list(range(6, 16)))
 
     def test_runtime_context_cache_invalidates_on_data_or_user_change(self):
         service = self.agent()._career

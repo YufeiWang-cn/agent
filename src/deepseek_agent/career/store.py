@@ -12,6 +12,8 @@ from ..timekeeping import now_china
 
 Json = dict[str, Any]
 CATEGORIES = frozenset({"education", "project", "skill", "preference", "feedback"})
+# 每条事实保留的历史修订版本数；反复修订不会让 fact_history 无限膨胀。
+MAX_FACT_HISTORY_PER_FACT = 10
 PROFILE_ID_PATTERN = re.compile(r"[a-zA-Z0-9_-]{1,64}\Z")
 
 
@@ -189,6 +191,10 @@ class CareerStore:
                         previous["revision"],
                         json.dumps(dict(previous), ensure_ascii=False),
                     ),
+                )
+                db.execute(
+                    "DELETE FROM fact_history WHERE fact_id=? AND revision<=?",
+                    (previous["id"], previous["revision"] - MAX_FACT_HISTORY_PER_FACT),
                 )
             db.execute(
                 "INSERT OR REPLACE INTO facts VALUES "

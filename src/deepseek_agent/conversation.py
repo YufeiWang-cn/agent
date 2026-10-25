@@ -24,10 +24,22 @@ class Conversation:
     def clear(self) -> None:
         self.messages = [{"role": "system", "content": self.system_prompt}]
 
-    def restore(self, messages: list[Message]) -> None:
+    def restore(
+        self,
+        messages: list[Message],
+        *,
+        copy: bool = True,
+    ) -> None:
+        """恢复历史消息；``copy=False`` 时接管独占的消息列表。
+
+        接管模式只浅拷贝列表本身、共享消息对象，省去一次全量深拷贝；
+        调用方必须保证该列表及其消息不会被其他所有者继续修改
+        （消息进入会话后本来就约定不再原地改动）。可能被共享的
+        来源（如列表缓存对象）必须保持默认的 ``copy=True``。
+        """
         if not messages or messages[0].get("role") != "system":
             raise ValueError("会话记录缺少 system 消息")
-        self.messages = deepcopy(messages)
+        self.messages = deepcopy(messages) if copy else list(messages)
         # 恢复旧会话时仍使用当前系统提示词，避免永久沿用过期版本。
         self.messages[0] = {"role": "system", "content": self.system_prompt}
 
