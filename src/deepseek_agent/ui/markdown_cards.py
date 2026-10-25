@@ -177,6 +177,7 @@ class MarkdownCodeCard:
         self._line_count = max(1, formatted.count("\n") + 1)
         self._height_job: str | None = None
         self._copy_reset_job: str | None = None
+        self._height_pending = False
 
         self.frame = tk.Frame(
             parent,
@@ -245,13 +246,30 @@ class MarkdownCodeCard:
         self._schedule_height_sync()
         self._bind_mousewheel(self.frame)
 
-    def set_width(self, width: int) -> None:
+    def set_width(self, width: int, *, defer: bool = False) -> bool:
         visible_width = max(260, width)
         if getattr(self, "_last_width", None) == visible_width:
-            return
+            return False
         self._last_width = visible_width
         self.frame.configure(width=visible_width)
+        if defer:
+            # 批量刷新时由调用方统一执行一次布局刷新，
+            # 避免每张卡片各自 update_idletasks 造成 O(n²) 重排。
+            self._height_pending = True
+            return True
         self._schedule_height_sync()
+        return True
+
+    def finalize_height(self) -> None:
+        """配合 ``set_width(defer=True)``：布局已刷新，只测量并应用高度。"""
+        if not getattr(self, "_height_pending", False):
+            return
+        self._height_pending = False
+        if not self.frame.winfo_exists():
+            return
+        # 宽度变化可能让横向滚动条出现或消失；先刷新再测量。
+        self._editor.refresh_horizontal_scrollbar()
+        self._apply_measured_height()
 
     def destroy(self) -> None:
         for attribute in ("_height_job", "_copy_reset_job"):
@@ -291,9 +309,11 @@ class MarkdownCodeCard:
         self.frame.update_idletasks()
 
         # 宽度变化可能会让横向滚动条出现或消失，先刷新它，再计算高度。
-        self._editor._refresh_horizontal_scrollbar()
+        self._editor.refresh_horizontal_scrollbar()
         self.frame.update_idletasks()
+        self._apply_measured_height()
 
+    def _apply_measured_height(self) -> None:
         border_height = 2
         toolbar_and_separator_height = 41
         text = self._editor.text
@@ -308,11 +328,7 @@ class MarkdownCodeCard:
         vertical_padding = 2 * int(text.cget("pady"))
         text_height = content_height + vertical_padding
 
-        scrollbar_height = (
-            self._editor._scroll_x.winfo_reqheight()
-            if self._editor._scroll_x.grid_info()
-            else 0
-        )
+        scrollbar_height = self._editor.horizontal_scrollbar_height()
         editor_height = text_height + scrollbar_height
         self.frame.configure(
             height=border_height + toolbar_and_separator_height + editor_height

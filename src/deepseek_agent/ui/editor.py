@@ -133,6 +133,21 @@ class SyntaxText(tk.Frame):
         self._scroll_x.set(first, last)
         self._set_horizontal_scrollbar(first > 0 or last < 1)
 
+    def refresh_horizontal_scrollbar(self) -> None:
+        """立即刷新横向滚动条的显示状态，供卡片测量高度前调用。"""
+        if self._horizontal_job is not None:
+            try:
+                self.after_cancel(self._horizontal_job)
+            except tk.TclError:
+                pass
+        self._refresh_horizontal_scrollbar()
+
+    def horizontal_scrollbar_height(self) -> int:
+        """返回横向滚动条占用的高度；未显示时为 0。"""
+        if not self._scroll_x.grid_info():
+            return 0
+        return self._scroll_x.winfo_reqheight()
+
     def _set_horizontal_scrollbar(self, visible: bool) -> None:
         if visible:
             # winfo_ismapped() 还取决于祖先窗口当前是否可见。

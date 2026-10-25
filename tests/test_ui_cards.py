@@ -282,6 +282,33 @@ class UiCardTests(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_tool_card_builds_editor_lazily_until_expanded(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk 不可用：{error}")
+        root.withdraw()
+        try:
+            chat = tk.Text(root, width=80, height=20)
+            chat.pack()
+            card = ToolCallCard(chat, "demo_tool", '{"path": "README.md"}')
+
+            # 折叠态不构建编辑器；结果到达时也只更新摘要。
+            self.assertIsNone(card._tabs)
+            card.set_result('{"ok": true}')
+            self.assertIsNone(card._tabs)
+            self.assertIn("已完成", card._status.cget("text"))
+
+            # 首次展开才构建参数与结果两个页签，且内容完整。
+            card.toggle()
+            self.assertIsNotNone(card._tabs)
+            root.update_idletasks()
+            self.assertIn("README.md", card._argument_editor.content)
+            # JSON 结果会被格式化展开，只验证内容确实写入了结果页。
+            self.assertIn('"ok": true', card._result_editor.content)
+        finally:
+            root.destroy()
+
     def test_tool_card_destroy_closes_fullscreen_viewer_callbacks(self) -> None:
         try:
             root = tk.Tk()
@@ -303,7 +330,8 @@ class UiCardTests(unittest.TestCase):
 
             self.assertNotIn(fullscreen_job, root.tk.call("after", "info"))
             self.assertFalse(viewer._window.winfo_exists())
-            self.assertEqual(card._tabs._items, {})
+            # 未展开过的卡片不构建编辑器，destroy 后也不残留。
+            self.assertIsNone(card._tabs)
         finally:
             root.destroy()
 

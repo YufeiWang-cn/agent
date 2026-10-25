@@ -167,7 +167,8 @@ def _parse_paragraph(lines: list[str], index: int) -> tuple[MarkdownBlock, int]:
         starts_block = re.match(r"^\s*(```|~~~)", candidate)
         if starts_block or _BLOCK_START.match(candidate):
             break
-        if _parse_table(lines, index) is not None:
+        # 表头行必须包含竖线；先做廉价预判，避免每行都进完整表格解析。
+        if "|" in candidate and _parse_table(lines, index) is not None:
             break
         paragraph_lines.append(candidate.strip())
         index += 1

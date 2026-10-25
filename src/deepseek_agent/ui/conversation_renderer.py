@@ -9,6 +9,10 @@ from .formatting import _split_emoji_spans
 from .markdown import MarkdownBlock, normalize_web_url, parse_inline, parse_markdown
 
 
+# Markdown 解析缓存的总字节上限，超限按插入顺序驱逐最旧条目。
+_MARKDOWN_CACHE_BYTE_LIMIT = 2 * 1024 * 1024
+
+
 class ConversationRenderer:
     """集中处理消息渲染，并维护渲染过程中创建的卡片资源。"""
 
@@ -31,10 +35,12 @@ class ConversationRenderer:
         self._default_cursor = str(chat_view.cget("cursor"))
         self._link_counter = 0
         self._link_tags: set[str] = set()
+        self._link_tags_by_target: dict[str, str] = {}
         self.code_cards: list[MarkdownCodeCard] = []
         self.table_cards: list[MarkdownTableCard] = []
         self.user_cards: list[UserMessageCard] = []
         self._markdown_cache: dict[str, tuple[MarkdownBlock, ...]] = {}
+        self._markdown_cache_bytes = 0
 
     def append(self, content: str, tag: str) -> None:
         was_at_bottom = self._is_at_bottom()
@@ -72,8 +78,11 @@ class ConversationRenderer:
     def resize(self, width: int) -> None:
         """批量调整嵌入卡片，避免每张卡片单独刷新布局树。"""
         card_width = max(260, width - 70)
-        for card in self.code_cards:
-            card.set_width(card_width)
+        pending_codes = [
+            card
+            for card in self.code_cards
+            if card.set_width(card_width, defer=True)
+        ]
         pending_tables = [
             card
             for card in self.table_cards
@@ -84,9 +93,11 @@ class ConversationRenderer:
             for card in self.user_cards
             if card.set_max_width(width - 48, defer=True)
         ]
-        if pending_tables or pending_users:
+        if pending_codes or pending_tables or pending_users:
             # 所有换行宽度先一次性写入，再统一读取 Tk 请求尺寸。
             self._chat_view.update_idletasks()
+            for card in pending_codes:
+                card.finalize_height()
             for card in pending_tables:
                 card.finalize_width()
             for card in pending_users:
@@ -103,9 +114,12 @@ class ConversationRenderer:
         self.code_cards.clear()
         self.table_cards.clear()
         self.user_cards.clear()
+        self._markdown_cache.clear()
+        self._markdown_cache_bytes = 0
         if self._link_tags:
             self._chat_view.tag_delete(*self._link_tags)
             self._link_tags.clear()
+        self._link_tags_by_target.clear()
         self._link_counter = 0
         self._chat_view.configure(cursor=self._default_cursor)
 
@@ -129,9 +143,17 @@ class ConversationRenderer:
         if cached is not None:
             return cached
         blocks = tuple(parse_markdown(content))
-        if len(self._markdown_cache) >= 256:
-            self._markdown_cache.pop(next(iter(self._markdown_cache)))
+        # 按字节数而非条数设上限：超长工具输出消息按条数缓存会占用数十 MB。
         self._markdown_cache[content] = blocks
+        self._markdown_cache_bytes += len(content)
+        while (
+            self._markdown_cache_bytes > _MARKDOWN_CACHE_BYTE_LIMIT
+            and self._markdown_cache
+        ):
+            oldest_key = next(iter(self._markdown_cache))
+            oldest = self._markdown_cache.pop(oldest_key)
+            self._markdown_cache_bytes -= len(oldest_key)
+            del oldest
         return blocks
 
     def _insert_markdown_block(
@@ -200,9 +222,15 @@ class ConversationRenderer:
             self._insert_chat_text(span.text, tags)
 
     def _register_link(self, target: str) -> str:
+        # 同一 URL 的链接共用一个 tag；长会话中反复引用相同来源时，
+        # 逐链接新建 tag 与三组绑定会无限累积。
+        existing = self._link_tags_by_target.get(target)
+        if existing is not None:
+            return existing
         self._link_counter += 1
         tag = f"md_link_target_{self._link_counter}"
         self._link_tags.add(tag)
+        self._link_tags_by_target[target] = tag
         self._chat_view.tag_bind(
             tag,
             "<Button-1>",
@@ -219,6 +247,22 @@ class ConversationRenderer:
             lambda _event: self._chat_view.configure(cursor=self._default_cursor),
         )
         return tag
+
+    def prune_unused_link_tags(self) -> None:
+        """删除已不再覆盖任何文本的链接 tag。
+
+        增量渲染会删除旧文本再重插，只有 ``clear`` 才清理 tag 时，
+        tag 与绑定会随会话长度单调增长。
+        """
+        for tag in tuple(self._link_tags):
+            if not self._chat_view.tag_ranges(tag):
+                self._chat_view.tag_delete(tag)
+                self._link_tags.discard(tag)
+        self._link_tags_by_target = {
+            target: tag
+            for target, tag in self._link_tags_by_target.items()
+            if tag in self._link_tags
+        }
 
     def _open_link(self, target: str) -> str:
         safe_target = normalize_web_url(target)

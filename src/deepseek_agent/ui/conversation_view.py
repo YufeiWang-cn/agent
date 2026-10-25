@@ -585,6 +585,9 @@ class ConversationView(ttk.Frame):
             self._rendering_history = False
             self._clear_live_response_tracking()
 
+        # 上面删除重插的旧文本可能带走链接 tag 的最后一段覆盖范围，
+        # 顺手回收不再覆盖任何文本的 tag，避免随会话长度累积。
+        self._renderer.prune_unused_link_tags()
         self._resize_tool_cards()
         if was_at_bottom:
             self._chat_view.see("end")

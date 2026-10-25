@@ -273,6 +273,18 @@ class ToolCallCard:
             self.frame,
             background=EDITOR_BACKGROUND,
         )
+        # 编辑器非常贵（语法高亮 + 全量内容渲染）；折叠态只需要摘要，
+        # 历史渲染大量工具卡时惰性创建，首次展开才构建。
+        self._tabs: EditorTabs | None = None
+        self._argument_editor: SyntaxText | None = None
+        self._result_editor: SyntaxText | None = None
+        self._sync_size()
+        self._bind_mousewheel(self.frame)
+
+    def _ensure_details(self) -> None:
+        """首次需要展开或写入结果页时才构建编辑器组件。"""
+        if self._tabs is not None:
+            return
         self._tabs = EditorTabs(
             self._details_frame,
             editor_font_size=11,
@@ -282,11 +294,17 @@ class ToolCallCard:
         self._argument_editor = self._tabs.add_or_update(
             "arguments",
             "参数",
-            arguments,
+            self._arguments,
             "json",
         )
-        self._result_editor: SyntaxText | None = None
-        self._sync_size()
+        if self._result is not None:
+            self._result_editor = self._tabs.add_or_update(
+                "result",
+                "结果",
+                self._result,
+                self._result_language,
+                select=self._expanded,
+            )
         self._bind_mousewheel(self.frame)
 
     def set_result(self, result: str) -> None:
@@ -299,6 +317,9 @@ class ToolCallCard:
             background="#FEF2F2" if is_failure else "#FFF7ED" if is_partial else "#ECFDF5",
         )
         self._summary.configure(text=self._make_result_summary(self._name, result))
+        if self._tabs is None:
+            # 从未展开过：结果先保存，等首次展开时一并构建。
+            return
         self._result_editor = self._tabs.add_or_update(
             "result",
             "结果",
@@ -313,6 +334,7 @@ class ToolCallCard:
         arrow = "▼" if self._expanded else "▶"
         self._toggle_button.configure(text=f"{arrow}  {self._display_name}")
         if self._expanded:
+            self._ensure_details()
             self._details_separator.pack(fill="x")
             self._details_frame.pack(
                 fill="both",
@@ -337,7 +359,8 @@ class ToolCallCard:
         if self._viewer is not None:
             self._viewer.close()
             self._viewer = None
-        self._tabs.destroy()
+        if self._tabs is not None:
+            self._tabs.destroy()
         self.frame.destroy()
 
     def _open_fullscreen(self) -> None:
