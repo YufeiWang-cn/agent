@@ -2,6 +2,7 @@
 
 import json
 import logging
+import random
 import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -18,7 +19,16 @@ from ..models.base import (
     UsageUpdate,
 )
 from ..observability import RuntimeMetrics
-from .errors import ModelCallError, classify_model_error
+from .errors import (
+    ModelCallError,
+    ModelCancelledError,
+    classify_model_error,
+    retry_after_seconds,
+)
+
+
+# 取消信号的轮询间隔；退避等待期间按此粒度检查停止请求。
+CANCEL_POLL_INTERVAL_SECONDS = 0.1
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,15 +37,26 @@ class RetryPolicy:
 
     max_retries: int = 3
     base_delay_seconds: float = 1.0
+    # 指数退避的延迟上限，防止最大重试次数较大时总等待时间无界增长。
+    max_delay_seconds: float = 30.0
+    # 0 到 0.5 之间的抖动比例；0 表示完全确定性的退避（测试依赖）。
+    jitter_fraction: float = 0.0
 
     def __post_init__(self) -> None:
         if self.max_retries < 0:
             raise ValueError("max_retries 不能小于 0")
         if self.base_delay_seconds < 0:
             raise ValueError("base_delay_seconds 不能小于 0")
+        if self.max_delay_seconds < 0:
+            raise ValueError("max_delay_seconds 不能小于 0")
+        if not 0 <= self.jitter_fraction <= 0.5:
+            raise ValueError("jitter_fraction 必须在 0 到 0.5 之间")
 
     def delay_for_retry(self, retry_number: int) -> float:
-        return self.base_delay_seconds * (2 ** (retry_number - 1))
+        return min(
+            self.base_delay_seconds * (2 ** (retry_number - 1)),
+            self.max_delay_seconds,
+        )
 
 
 class RetryingChatModel:
@@ -83,6 +104,8 @@ class RetryingChatModel:
         self,
         messages: Sequence[Message],
         tools: Sequence[dict[str, Any]],
+        *,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> Iterable[StreamEvent]:
         self._metrics.start_request()
         started_at = self._clock()
@@ -134,6 +157,13 @@ class RetryingChatModel:
                 if retryable and not retries_exhausted:
                     retry_number = attempt_index + 1
                     delay = self._policy.delay_for_retry(retry_number)
+                    retry_after = retry_after_seconds(error)
+                    if retry_after is not None:
+                        # 限流响应的服务器指示优先，但仍受单次延迟上限约束。
+                        delay = min(max(delay, retry_after), self._policy.max_delay_seconds)
+                    if self._policy.jitter_fraction > 0:
+                        spread = delay * self._policy.jitter_fraction
+                        delay += random.uniform(-spread, spread)
                     self._metrics.record_retry()
                     self._logger.warning(
                         "model_request_retry model=%s category=%s "
@@ -143,7 +173,7 @@ class RetryingChatModel:
                         retry_number,
                         delay,
                     )
-                    self._sleeper(delay)
+                    self._wait_before_retry(delay, should_cancel)
                     continue
 
                 duration = self._clock() - started_at
@@ -185,6 +215,25 @@ class RetryingChatModel:
                 duration,
             )
             return
+
+    def _wait_before_retry(
+        self,
+        delay_seconds: float,
+        should_cancel: Callable[[], bool] | None,
+    ) -> None:
+        """等待退避时间，期间轮询取消信号以便界面停止按钮立即生效。"""
+        if should_cancel is None:
+            self._sleeper(delay_seconds)
+            return
+        remaining = delay_seconds
+        while remaining > 0:
+            if should_cancel():
+                raise ModelCancelledError("等待重试时收到停止请求。")
+            slice_seconds = min(CANCEL_POLL_INTERVAL_SECONDS, remaining)
+            self._sleeper(slice_seconds)
+            remaining -= slice_seconds
+        if should_cancel():
+            raise ModelCancelledError("等待重试时收到停止请求。")
 
     @staticmethod
     def _event_token_text(event: StreamEvent) -> str:

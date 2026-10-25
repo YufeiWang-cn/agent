@@ -257,6 +257,10 @@ class RunCommandTool(Tool):
                 "GIT_OPTIONAL_LOCKS": "0",
                 "PYTHONUNBUFFERED": "1",
                 "PYTHONDONTWRITEBYTECODE": "1",
+                # 输出按 UTF-8 解码；强制子 Python 也用 UTF-8，
+                # 否则中文 Windows 下重定向输出默认走 cp936 会全部乱码。
+                "PYTHONUTF8": "1",
+                "PYTHONIOENCODING": "utf-8",
                 "PIP_DISABLE_PIP_VERSION_CHECK": "1",
                 "NO_COLOR": "1",
             }
@@ -279,8 +283,15 @@ class RunCommandTool(Tool):
             if os.name == "nt":
                 # /T 会连同子进程一起终止。
                 # 单独调用 process.kill() 通常只能终止主进程。
+                # 必须用绝对路径：按名字调用时 Windows 会先搜索当前目录，
+                # 工作区里被植入的 taskkill.exe 会借机执行。
+                taskkill = (
+                    Path(os.environ.get("SystemRoot", r"C:\Windows"))
+                    / "System32"
+                    / "taskkill.exe"
+                )
                 subprocess.run(
-                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    [str(taskkill), "/PID", str(process.pid), "/T", "/F"],
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,

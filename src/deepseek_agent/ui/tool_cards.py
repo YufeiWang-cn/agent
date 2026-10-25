@@ -387,6 +387,15 @@ class ToolCallCard:
 
     @staticmethod
     def _make_display_name(name: str, arguments: str) -> str:
+        career_names = {
+            "import_career_document": "导入简历／岗位",
+            "career_memory": "求职记忆",
+            "career_review": "简历修改与审阅",
+            "export_career_review": "导出修改报告",
+            "build_resume_draft": "整理简历初稿",
+        }
+        if name in career_names:
+            return career_names[name]
         if name == "read_web_page":
             return "读取网页正文"
         if name != "web_search":

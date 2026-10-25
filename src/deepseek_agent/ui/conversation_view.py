@@ -44,11 +44,13 @@ class ConversationView(ttk.Frame):
         *,
         on_prompt_suggestion: Callable[[str], None],
         focus_composer: Callable[[], None],
+        career_mode: bool = False,
     ) -> None:
         super().__init__(parent, style="App.TFrame")
         self._root = self.winfo_toplevel()
         self._on_prompt_suggestion = on_prompt_suggestion
         self._focus_composer = focus_composer
+        self._career_mode = career_mode
         self._tool_cards: dict[str, ToolCallCard] = {}
         self._tool_card_widgets: list[ToolCallCard] = []
         self._resize_job: str | None = None
@@ -446,14 +448,15 @@ class ConversationView(ttk.Frame):
         )
         tk.Label(
             frame,
-            text="从一个清晰目标开始",
+            text="准备你的下一份实习或工作" if getattr(self, "_career_mode", False) else "从一个清晰目标开始",
             background="#F8FAFC",
             foreground=TEXT_PRIMARY,
             font=("Microsoft YaHei UI", 15, "bold"),
         ).pack(padx=34, pady=(24, 5))
         tk.Label(
             frame,
-            text="描述你想完成的事情，也可以附上文件或项目路径。",
+            text="先导入或粘贴简历，也可以从课程和项目经历开始。" if getattr(self, "_career_mode", False)
+            else "描述你想完成的事情，也可以附上文件或项目路径。",
             background="#F8FAFC",
             foreground=TEXT_SECONDARY,
             font=("Microsoft YaHei UI", 10),
@@ -465,6 +468,12 @@ class ConversationView(ttk.Frame):
             ("解释代码", "请解释下面代码的作用，并指出潜在问题：\n"),
             ("编写测试", "请为这个功能补充测试，并说明覆盖的边界情况。"),
         )
+        if getattr(self, "_career_mode", False):
+            suggestions = (
+                ("已有简历", "我有一份简历，想申请 Agent／后端实习。请帮我诊断并优化：\n"),
+                ("从零整理", "我还没有简历，请通过访谈帮我整理课程、项目与实践经历，一次最多问三个问题。"),
+                ("目标岗位", "请帮我分析这个 Agent／后端岗位，结合我的经历说明匹配依据和缺口：\n"),
+            )
         for column, (label, prompt) in enumerate(suggestions):
             tk.Button(
                 actions,

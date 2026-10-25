@@ -9,6 +9,7 @@ DEFAULT_BLOCKED_NAMES = frozenset({".env", ".git", ".venv", "__pycache__"})
 
 # 这些路径从工作区根目录开始匹配，用于保护 Agent 自己维护的内部状态。
 DEFAULT_BLOCKED_PREFIXES = (
+    Path("data/career"),
     Path("data/sessions"),
     Path("data/runs"),
     Path("data/projects.json"),
@@ -65,11 +66,27 @@ class WorkspaceGuard:
                 raise WorkspaceAccessError(
                     f"文件超过大小限制 {self._max_file_size} 字节：{user_path}"
                 )
-            return path, content.decode("utf-8")
+            # utf-8-sig 同时接受带/不带 BOM 的文件；保留 BOM 会让
+            # 文本首字符变成 \ufeff，replace_text/apply_patch 的匹配会失败。
+            return path, content.decode("utf-8-sig")
         except UnicodeDecodeError as error:
             raise WorkspaceAccessError(f"文件不是有效的 UTF-8 文本：{user_path}") from error
         except OSError as error:
             raise WorkspaceAccessError(f"无法读取文件：{user_path}") from error
+
+    def read_bytes(self, user_path: str) -> tuple[Path, bytes]:
+        """在原有路径边界内有界读取二进制文档。"""
+        path = self._resolve(user_path)
+        if not path.is_file():
+            raise WorkspaceAccessError(f"文件不存在或不是普通文件：{user_path}")
+        try:
+            with path.open("rb") as source:
+                data = source.read(self._max_file_size + 1)
+        except OSError as error:
+            raise WorkspaceAccessError(f"无法读取文件：{user_path}") from error
+        if len(data) > self._max_file_size:
+            raise WorkspaceAccessError(f"文件超过大小限制 {self._max_file_size} 字节：{user_path}")
+        return path, data
 
     def write_text(self, user_path: str, content: str) -> tuple[Path, bool, int]:
         path, created, encoded_content = self.prepare_text_write(

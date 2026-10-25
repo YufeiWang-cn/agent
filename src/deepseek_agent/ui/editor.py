@@ -218,7 +218,14 @@ class SyntaxText(tk.Frame):
                         f"{token.start[0]}.{token.start[1]}",
                         f"{token.end[0]}.{token.end[1]}",
                     )
-        except (IndentationError, tokenize.TokenError):
+        # 含 NUL 等非法字符的内容会让 tokenize 抛 SyntaxError/ValueError，
+        # 高亮失败必须回退而不是中断整轮渲染。
+        except (
+            IndentationError,
+            SyntaxError,
+            ValueError,
+            tokenize.TokenError,
+        ):
             self._highlight_generic_code(content)
 
     def _highlight_markdown(self, content: str) -> None:

@@ -342,7 +342,14 @@ class ReadWebPageToolTests(unittest.TestCase):
             )
 
     def test_repeat_or_excessive_page_reads_require_confirmation(self) -> None:
-        transport = RecordingExtractTransport()
+        transport = RecordingExtractTransport(
+            {
+                "results": [
+                    {"url": "https://one.example.com/article", "raw_content": "A" * 40},
+                    {"url": "https://two.example.org/report", "raw_content": "B" * 40},
+                ]
+            }
+        )
         tool = self.build_tool(transport, auto_pages_per_turn=2)
         first = {
             "urls": [
@@ -352,6 +359,8 @@ class ReadWebPageToolTests(unittest.TestCase):
             "question": "核对结论",
         }
         self.assertFalse(tool.requires_confirmation_for(first))
+        # 自动额度只在请求真正发起后占用。
+        tool.execute(first)
         self.assertTrue(
             tool.requires_confirmation_for(
                 {

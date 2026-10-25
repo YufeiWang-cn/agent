@@ -334,3 +334,9 @@ python -m coverage report
 ```
 
 GitHub Actions 会读取 `.python-version` 中的推荐版本，并自动执行上述质量检查。
+
+## 学生求职模式
+
+新增面向计算机专业学生的 Agent／后端实习与校招流程：导入 PDF／DOCX／文本简历、经历访谈、岗位分析、逐条修改审阅、项目面试与 Markdown 报告导出。用户确认的经历事实可以跨会话复用，纠正后会使依赖旧事实的报告失效。
+
+在现有环境执行 `python -m pip install -e .` 后，用 `python career_gui.py` 启动桌面求职模式，或 `python career.py` 启动 CLI。原通用入口继续保留。详细用法及首版边界见 [求职模式指南](docs/career.md)。

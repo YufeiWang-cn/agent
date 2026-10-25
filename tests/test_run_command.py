@@ -163,6 +163,18 @@ class RunCommandToolTests(unittest.TestCase):
         self.assertEqual(result["stdout"].strip(), "missing")
         self.assertNotIn("private-value", json.dumps(result))
 
+    def test_child_python_uses_utf8_for_redirected_output(self) -> None:
+        """中文 Windows 下子 Python 重定向输出默认是 cp936，必须强制 UTF-8。"""
+        script = self.workspace / "utf8_output.py"
+        script.write_text("print('中文输出')\n", encoding="utf-8")
+
+        result = json.loads(
+            self.tool.execute({"command": ["python", "utf8_output.py"]})
+        )
+
+        self.assertEqual(result["exit_code"], 0)
+        self.assertIn("中文输出", result["stdout"])
+
     def test_timeout_and_cancellation_terminate_the_process(self) -> None:
         script = self.workspace / "wait.py"
         script.write_text("import time\ntime.sleep(10)\n", encoding="utf-8")

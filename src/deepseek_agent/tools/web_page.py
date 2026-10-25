@@ -283,15 +283,20 @@ class ReadWebPageTool(Tool):
         self._confirmation_reason = None
 
     def requires_confirmation_for(self, arguments: JsonObject) -> bool:
-        """自动读取有限页面；重复 URL 或超过页面额度时请求确认。"""
+        """自动读取有限页面；重复 URL 或超过页面额度时请求确认。
+
+        只读判断，不推进计数；额度与 URL 记录在真正发起请求的
+        ``execute_with_context`` 里登记，用户拒绝确认不消耗自动额度。
+        """
         validated = self._validate_arguments(arguments)
         duplicate_urls = [url for url in validated.urls if url in self._turn_urls]
-        self._turn_page_count += len(validated.urls)
-        self._turn_urls.update(validated.urls)
+        would_exceed = (
+            self._turn_page_count + len(validated.urls) > self._auto_pages_per_turn
+        )
         reasons: list[str] = []
         if duplicate_urls:
             reasons.append("包含本轮已经读取过的 URL")
-        if self._turn_page_count > self._auto_pages_per_turn:
+        if would_exceed:
             reasons.append(
                 "超过本轮自动读取页面数"
                 f"（{self._auto_pages_per_turn} 页）"
@@ -320,6 +325,9 @@ class ReadWebPageTool(Tool):
     ) -> str:
         validated = self._validate_arguments(arguments)
         self._raise_if_cancelled(context)
+        # 请求真正发起后才登记 URL 与页面额度，拒绝确认的调用不占用自动额度。
+        self._turn_page_count += len(validated.urls)
+        self._turn_urls.update(validated.urls)
         timeout_seconds = self._effective_timeout(context)
         response = self._client.extract(
             validated.urls,

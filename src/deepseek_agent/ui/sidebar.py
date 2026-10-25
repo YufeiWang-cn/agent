@@ -93,7 +93,7 @@ class ProjectSessionSidebar(ttk.Frame):
         brand.pack(fill="x")
         ttk.Label(
             brand,
-            text="DeepSeek Agent",
+            text="学生求职助手" if getattr(self._agent, "career_enabled", False) else "DeepSeek Agent",
             style="SidebarTitle.TLabel",
         ).pack(anchor="w")
         ttk.Label(

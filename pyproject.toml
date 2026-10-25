@@ -11,6 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
     "openai>=2.0.0",
     "python-dotenv>=1.0.0",
+    "pypdf>=5,<7",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +24,8 @@ dev = [
 [project.scripts]
 deepseek-agent = "deepseek_agent.cli:main"
 deepseek-agent-gui = "deepseek_agent.gui_app:main"
+career-agent = "deepseek_agent.cli:career_main"
+career-agent-gui = "deepseek_agent.gui_app:career_main"
 deepseek-agent-eval = "deepseek_agent.evaluation.cli:main"
 
 [tool.setuptools]

@@ -259,6 +259,22 @@ class SettingsTests(unittest.TestCase):
                 ):
                     Settings.from_env()
 
+    def test_repr_does_not_leak_api_keys(self) -> None:
+        """repr 会进日志和异常上下文，密钥只能以掩码形式出现。"""
+        environment = {
+            "DEEPSEEK_API_KEY": "sk-super-secret-value",
+            "TAVILY_API_KEY": "tvly-another-secret",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            with patch("deepseek_agent.config.load_dotenv"):
+                settings = Settings.from_env()
+
+        text = repr(settings)
+        self.assertNotIn("sk-super-secret-value", text)
+        self.assertNotIn("tvly-another-secret", text)
+        self.assertIn("api_key=<set:", text)
+        self.assertEqual(settings.api_key, "sk-super-secret-value")
+
 
 if __name__ == "__main__":
     unittest.main()

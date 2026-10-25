@@ -403,29 +403,44 @@ class WebSearchTool(Tool):
         self._confirmation_reason = None
 
     def requires_confirmation_for(self, arguments: JsonObject) -> bool:
-        """前若干次网络请求自动执行，重复或超额搜索需要确认。"""
+        """前若干次网络请求自动执行，重复或超额搜索需要确认。
+
+        只读判断，不推进计数：真正的计数与去重签名在
+        ``execute_with_context`` 发起请求时才记录，用户拒绝确认
+        不消耗自动额度，重试同一搜索也不会被误判为重复。
+        """
         validated = self._validate_arguments(arguments)
-        signature = (
-            self._normalize_query(validated.query),
-            self._normalize_query(validated.international_query or ""),
-            validated.topic,
-            validated.time_range,
-            validated.scope,
-        )
+        signature = self._signature(validated)
         duplicate = signature in self._turn_signatures
-        self._turn_request_count += validated.provider_request_count
-        self._turn_signatures.add(signature)
-        over_limit = self._turn_request_count > self._auto_calls_per_turn
+        would_exceed = (
+            self._turn_request_count + validated.provider_request_count
+            > self._auto_calls_per_turn
+        )
         reasons: list[str] = []
         if duplicate:
             reasons.append("与本轮之前的搜索重复")
-        if over_limit:
+        if would_exceed:
             reasons.append(
                 "超过本轮自动网络请求次数"
                 f"（{self._auto_calls_per_turn} 次）"
             )
         self._confirmation_reason = "；".join(reasons) or None
         return bool(reasons)
+
+    @staticmethod
+    def _signature(validated: SearchArguments) -> tuple[str, str, str, str | None, str]:
+        return (
+            WebSearchTool._normalize_query(validated.query),
+            WebSearchTool._normalize_query(validated.international_query or ""),
+            validated.topic,
+            validated.time_range,
+            validated.scope,
+        )
+
+    def _record_request(self, validated: SearchArguments) -> None:
+        """请求真正发起后才占用本轮的自动额度与去重记录。"""
+        self._turn_request_count += validated.provider_request_count
+        self._turn_signatures.add(self._signature(validated))
 
     def confirmation_arguments_for(
         self,
@@ -449,6 +464,7 @@ class WebSearchTool(Tool):
     ) -> str:
         validated = self._validate_arguments(arguments)
         self._raise_if_cancelled(context)
+        self._record_request(validated)
         timeout_seconds = self._effective_timeout(context)
         if validated.scope == "balanced":
             payload = self._execute_balanced(
@@ -521,8 +537,10 @@ class WebSearchTool(Tool):
                         max_results=max_results,
                         requested_scope=scope,
                     )
-                except ToolExecutionError as error:
-                    errors[scope] = str(error)
+                except Exception as error:
+                    # 任何一方的异常都不应丢弃另一方已成功的部分结果；
+                    # 未预期的异常同样归入该 scope 的错误说明。
+                    errors[scope] = str(error) or type(error).__name__
 
         self._raise_if_cancelled(context)
         if not groups:

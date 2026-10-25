@@ -41,9 +41,13 @@ CONFIRMED_GIT_COMMANDS = frozenset(
 )
 # 高破坏性命令不会在确认后放行，避免一次误确认永久丢失改动。
 FORBIDDEN_GIT_COMMANDS = frozenset({"clean", "reset"})
+# ``git grep`` 的 ``--open-files-in-pager`` 允许附带/缩写形式（``-Oless``、``--open``），
+# 任意一种都能免确认启动外部程序，必须整体拦截。
+FORBIDDEN_GIT_PAGER_PREFIXES = ("-O", "--open")
+# 注意：``-c``/``-C`` 这类全局选项只有出现在子命令之前才危险（改配置/改工作区），
+# 而下方校验已强制子命令必须紧随 ``git``；出现在子命令之后的 ``-c``/``-C``
+# 是 ``grep`` 计数、``diff/log`` 上下文行数等合法只读选项，因此不列入本表。
 FORBIDDEN_GIT_OPTIONS = (
-    "-C",
-    "-c",
     "--git-dir",
     "--work-tree",
     "--namespace",
@@ -55,6 +59,19 @@ FORBIDDEN_GIT_OPTIONS = (
     "--no-index",
     "--open-files-in-pager",
 )
+
+
+def _matches_forbidden_git_option(argument: str) -> bool:
+    """判断参数是否命中禁用的 Git 选项。
+
+    长选项按精确或 ``=`` 赋值形式匹配；不能用统一的前缀匹配，
+    因为 ``--text``（按文本处理二进制）等合法选项是 ``--textconv`` 的前缀。
+    pager 选项的前缀形式单独拦截，见 ``FORBIDDEN_GIT_PAGER_PREFIXES``。
+    """
+    for option in FORBIDDEN_GIT_OPTIONS:
+        if argument == option or argument.startswith(f"{option}="):
+            return True
+    return argument.startswith(FORBIDDEN_GIT_PAGER_PREFIXES)
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,9 +139,7 @@ class CommandPolicyResolver:
         if len(command) < 2 or command[1].startswith("-"):
             raise ToolExecutionError("git 命令必须直接指定受支持的子命令。")
         if any(
-            argument == option or argument.startswith(f"{option}=")
-            for argument in command[1:]
-            for option in FORBIDDEN_GIT_OPTIONS
+            _matches_forbidden_git_option(argument) for argument in command[1:]
         ):
             raise ToolExecutionError("git 命令包含可能绕过工作区或写入文件的选项。")
         subcommand = command[1].lower()

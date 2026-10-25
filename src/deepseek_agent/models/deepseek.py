@@ -94,15 +94,25 @@ class DeepSeekModel:
             "model": self._model_name,
             "messages": list(messages),
             "stream": True,
+            # OpenAI 兼容端点默认不在流式分片中返回用量，
+            # 不带这个开关 UsageUpdate 永远不会触发，token 统计只能靠估算。
+            "stream_options": {"include_usage": True},
         }
         if tools:
             request["tools"] = list(tools)
         # 旧会话无法恢复原始协议内容；保留历史，并在本次请求禁用思考模式。
-        # 新产生的回复会完整记录 reasoning_content，不需要丢弃已有对话。
-        if any(
-            message.get("role") == "assistant"
-            and not isinstance(message.get("reasoning_content"), str)
-            for message in messages
+        # 只看最后一条助手消息：更早的旧回复缺 reasoning_content 不应把
+        # 整个会话永久锁定在无思考模式，新回复一旦带回 reasoning 即恢复。
+        last_assistant = next(
+            (
+                message
+                for message in reversed(messages)
+                if message.get("role") == "assistant"
+            ),
+            None,
+        )
+        if last_assistant is not None and not isinstance(
+            last_assistant.get("reasoning_content"), str
         ):
             request["extra_body"] = {"thinking": {"type": "disabled"}}
 

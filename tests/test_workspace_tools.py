@@ -78,6 +78,17 @@ class WorkspaceToolTests(unittest.TestCase):
         result = self.read_tool.execute({"path": "src/app.py"})
         self.assertEqual(result, "print('你好')\n")
 
+    def test_read_text_file_strips_utf8_bom(self) -> None:
+        """记事本等编辑器保存的 UTF-8 BOM 不能混进内容破坏后续文本匹配。"""
+        (self.workspace / "bom.py").write_bytes(
+            b"\xef\xbb\xbfprint('bom')\n"
+        )
+
+        result = self.read_tool.execute({"path": "bom.py"})
+
+        self.assertEqual(result, "print('bom')\n")
+        self.assertNotIn("\ufeff", result)
+
     def test_sensitive_and_outside_paths_are_rejected(self) -> None:
         blocked_paths = [
             ".env",

@@ -904,21 +904,34 @@ class WebSearchToolTests(unittest.TestCase):
 
     def test_balanced_search_uses_two_automatic_request_credits(self) -> None:
         tool = self.build_tool(RecordingTransport(), auto_calls_per_turn=2)
+        balanced_arguments = {
+            "query": "人工智能进展",
+            "international_query": "artificial intelligence progress",
+            "scope": "balanced",
+        }
 
-        self.assertFalse(
-            tool.requires_confirmation_for(
-                {
-                    "query": "人工智能进展",
-                    "international_query": "artificial intelligence progress",
-                    "scope": "balanced",
-                }
-            )
-        )
+        self.assertFalse(tool.requires_confirmation_for(balanced_arguments))
+        # 真正发起请求后才占用两次自动额度。
+        tool.execute(balanced_arguments)
         self.assertTrue(
             tool.requires_confirmation_for(
                 {"query": "another target", "scope": "unrestricted"}
             )
         )
+
+    def test_declined_confirmation_does_not_consume_automatic_credits(self) -> None:
+        """用户拒绝确认的调用没有发起请求，不应占用自动额度。"""
+        tool = self.build_tool(RecordingTransport(), auto_calls_per_turn=2)
+        first = {"query": "first query", "scope": "unrestricted"}
+        duplicate = {"query": " first  query ", "scope": "unrestricted"}
+        third = {"query": "third query", "scope": "unrestricted"}
+
+        self.assertFalse(tool.requires_confirmation_for(first))
+        tool.execute(first)
+        # 重复搜索需要确认；用户拒绝，请求并未发生。
+        self.assertTrue(tool.requires_confirmation_for(duplicate))
+        # 被拒绝的那次不占用第二次自动额度。
+        self.assertFalse(tool.requires_confirmation_for(third))
 
     def test_same_query_in_different_scopes_is_not_duplicate(self) -> None:
         tool = self.build_tool(
@@ -926,16 +939,12 @@ class WebSearchToolTests(unittest.TestCase):
             auto_calls_per_turn=3,
         )
 
-        self.assertFalse(
-            tool.requires_confirmation_for(
-                {"query": "DeepSeek", "scope": "domestic"}
-            )
-        )
-        self.assertFalse(
-            tool.requires_confirmation_for(
-                {"query": "DeepSeek", "scope": "international"}
-            )
-        )
+        domestic = {"query": "DeepSeek", "scope": "domestic"}
+        self.assertFalse(tool.requires_confirmation_for(domestic))
+        tool.execute(domestic)
+        international = {"query": "DeepSeek", "scope": "international"}
+        self.assertFalse(tool.requires_confirmation_for(international))
+        tool.execute(international)
         self.assertTrue(
             tool.requires_confirmation_for(
                 {"query": " deepseek ", "scope": "domestic"}
@@ -950,11 +959,13 @@ class WebSearchToolTests(unittest.TestCase):
                 {"query": "first query", "scope": "unrestricted"}
             )
         )
+        tool.execute({"query": "first query", "scope": "unrestricted"})
         self.assertFalse(
             tool.requires_confirmation_for(
                 {"query": "second query", "scope": "unrestricted"}
             )
         )
+        tool.execute({"query": "second query", "scope": "unrestricted"})
         self.assertTrue(
             tool.requires_confirmation_for(
                 {"query": "third query", "scope": "unrestricted"}
@@ -968,6 +979,7 @@ class WebSearchToolTests(unittest.TestCase):
                 {"query": "First   Query", "scope": "unrestricted", "topic": "news"}
             )
         )
+        tool.execute({"query": "First   Query", "scope": "unrestricted", "topic": "news"})
         self.assertFalse(
             tool.requires_confirmation_for(
                 {"query": "first query", "scope": "unrestricted", "topic": "general"}
@@ -981,6 +993,7 @@ class WebSearchToolTests(unittest.TestCase):
                 {"query": "First   Query", "scope": "unrestricted", "topic": "news"}
             )
         )
+        tool.execute({"query": "First   Query", "scope": "unrestricted", "topic": "news"})
         self.assertTrue(
             tool.requires_confirmation_for(
                 {"query": " first query ", "scope": "unrestricted", "topic": "news"}

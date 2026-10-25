@@ -1,5 +1,6 @@
 """读取、校验并集中保存 Agent 的运行配置。"""
 
+import dataclasses
 import os
 import re
 import math
@@ -7,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+from .career.store import PROFILE_ID_PATTERN
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "system.md"
@@ -216,6 +219,27 @@ class Settings:
     web_page_chunks_per_source: int = DEFAULT_WEB_PAGE_CHUNKS_PER_SOURCE
     web_page_extract_depth: str = DEFAULT_WEB_PAGE_EXTRACT_DEPTH
     web_page_max_content_chars: int = DEFAULT_WEB_PAGE_MAX_CONTENT_CHARS
+    agent_mode: str = "general"
+    career_profile_id: str = "default"
+
+    # frozen dataclass 自动生成的 repr 会把密钥原样打进日志和异常上下文，
+    # 这里改为只显示密钥是否已配置及其长度。
+    def __repr__(self) -> str:
+        fields = []
+        for field in dataclasses.fields(self):
+            value = getattr(self, field.name)
+            if field.name in {"api_key", "tavily_api_key"}:
+                shown = f"<set:{len(value)} chars>" if value else "<not set>"
+            else:
+                shown = repr(value)
+            fields.append(f"{field.name}={shown}")
+        return f"{type(self).__name__}({', '.join(fields)})"
+
+    def __post_init__(self) -> None:
+        if self.agent_mode not in {"general", "career"}:
+            raise ValueError("AGENT_MODE 只能是 general 或 career。")
+        if not PROFILE_ID_PATTERN.fullmatch(self.career_profile_id):
+            raise ValueError("AGENT_CAREER_PROFILE_ID 只能包含 1 到 64 个英文字母、数字、下划线或短横线。")
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -440,6 +464,8 @@ class Settings:
             )
 
         return cls(
+            agent_mode=os.getenv("AGENT_MODE", "general").strip().lower(),
+            career_profile_id=os.getenv("AGENT_CAREER_PROFILE_ID", "default").strip(),
             api_key=api_key,
             base_url=os.getenv(
                 "DEEPSEEK_BASE_URL", "https://api.deepseek.com"

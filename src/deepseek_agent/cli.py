@@ -1,5 +1,8 @@
 """实现 Agent 的交互式命令行界面和会话管理命令。"""
 
+import json
+from dataclasses import replace
+
 from .agent import Agent, AgentCancelledError
 from .config import PROJECT_ROOT, Settings
 from .conversation import Message
@@ -55,6 +58,8 @@ class CliApplication:
         if command == "/help":
             self._print_help()
             return True
+        if self._handle_career_command(prompt):
+            return True
         if command == "/clear":
             self._clear_conversation()
             return True
@@ -95,6 +100,59 @@ class CliApplication:
             print("未知命令。输入 /help 查看可用命令。")
             return True
         return False
+
+    def _handle_career_command(self, prompt: str) -> bool:
+        command, _, argument = prompt.partition(" ")
+        command = command.lower()
+        commands = {"/resume", "/jd", "/diagnose", "/match", "/interview", "/memory", "/forget"}
+        if command not in commands:
+            return False
+        if not self._agent.career_enabled:
+            print("请使用 python career.py 启动求职模式。")
+            return True
+        if command in {"/resume", "/jd"}:
+            kind = "简历" if command == "/resume" else "岗位描述"
+            if argument.strip():
+                path = argument.strip().strip('"')
+                self._chat(f"请导入我的{kind}，工作区相对路径：{path}\n"
+                           "使用 import_career_document 保存来源，然后指出最值得补充的信息。")
+            else:
+                print(f"粘贴{kind}，单独输入 /end 提交；/cancel 取消：")
+                lines = []
+                try:
+                    while True:
+                        line = input()
+                        if line.strip() == "/cancel":
+                            return True
+                        if line.strip() == "/end":
+                            break
+                        lines.append(line)
+                except (EOFError, KeyboardInterrupt):
+                    print("已取消导入。")
+                    return True
+                if "\n".join(lines).strip():
+                    self._chat(f"这是我的{kind}，请导入来源并分析：\n" + "\n".join(lines))
+            return True
+        if command == "/memory":
+            print(json.dumps(self._agent.career_snapshot(), ensure_ascii=False, indent=2))
+        elif command == "/forget":
+            if not argument.strip():
+                print("用法：/forget <事实 ID>；ID 可从 /memory 查看。")
+            else:
+                try:
+                    if input("删除这条长期事实及纠正历史？输入 y 确认：").strip().lower() == "y":
+                        self._agent.forget_career_fact(argument.strip())
+                        print("已删除长期事实；原始简历和聊天历史仍保留。")
+                except (ValueError, EOFError, KeyboardInterrupt) as error:
+                    print(f"删除未完成：{error}")
+        else:
+            prompts = {
+                "/diagnose": "请诊断我的已有简历，优先列出三项问题；缺少材料时先询问，按需要追问经历。",
+                "/match": "请对照目标 JD 与我的简历逐项分析要求、事实依据、缺口和准备建议。",
+                "/interview": "请根据我的项目和目标 Agent／后端岗位进行模拟面试，一次问一个问题。",
+            }
+            self._chat(prompts[command])
+        return True
 
     def _chat(self, prompt: str) -> None:
         started_output = False
@@ -137,6 +195,12 @@ class CliApplication:
                 print()
             detail = "已执行工具的记录已保留。" if error.tool_records_preserved else "本轮已取消。"
             print(f"\n[已停止] {detail}")
+        except KeyboardInterrupt:
+            # Ctrl+C 是 BaseException，不会走上面的 Exception 分支；
+            # 中断当前生成但保留会话，回到输入循环。
+            if started_output:
+                print()
+            print("\n[已中断] 当前回复被 Ctrl+C 中断，会话已保留；继续输入或 /exit 退出。")
         except Exception as error:
             if started_output:
                 print()
@@ -204,6 +268,8 @@ class CliApplication:
             )
 
     def _print_welcome(self) -> None:
+        if self._agent.career_enabled:
+            print("学生求职模式：Agent 应用开发／后端实习与校招。先用 /resume 导入简历，或直接介绍经历。")
         print(f"DeepSeek Agent 已启动，当前模型：{self._agent.model_name}")
         print(
             f"当前会话：{self._agent.session_id[:8]}  "
@@ -236,6 +302,9 @@ class CliApplication:
             "  /model        查看当前模型\n"
             "  /tools        查看可用工具\n"
             "  /exit         退出程序\n"
+            "求职模式：/resume [路径] 导入或粘贴简历；/jd [路径] 导入岗位描述\n"
+            "  /diagnose 简历诊断；/match 岗位分析；/interview 模拟面试\n"
+            "  /memory 查看长期记忆；/forget <事实 ID> 删除事实\n"
             "提示：<ID> 是占位符，请替换为 /sessions 显示的实际会话 ID。"
         )
 
@@ -319,14 +388,20 @@ class CliApplication:
         return f"助手：{message.get('content') or ''}"
 
 
-def main() -> None:
+def main(mode: str | None = None) -> None:
     """启动 DeepSeek Agent 命令行界面。"""
     settings = Settings.from_env()
+    if mode is not None:
+        settings = replace(settings, agent_mode=mode)
     logger = build_file_logger(
         PROJECT_ROOT / "logs" / "agent.log",
         settings.log_level,
     )
     CliApplication(Agent(settings, logger=logger)).run()
+
+
+def career_main() -> None:
+    main(mode="career")
 
 
 if __name__ == "__main__":

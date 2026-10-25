@@ -15,6 +15,26 @@ class RetryableModelError(RuntimeError):
     """表示适配器或测试主动声明的临时模型错误。"""
 
 
+class ModelCancelledError(RuntimeError):
+    """在退避等待期间检测到取消信号时抛出，由上层转换为用户可见的取消。"""
+
+
+def retry_after_seconds(error: Exception) -> float | None:
+    """读取限流响应的 Retry-After 头；缺失或非法时返回 None。"""
+    if not isinstance(error, RateLimitError):
+        return None
+    headers = getattr(getattr(error, "response", None), "headers", None)
+    if headers is None:
+        return None
+    raw_value = headers.get("retry-after")
+    if raw_value is None:
+        return None
+    try:
+        return max(0.0, float(raw_value))
+    except (TypeError, ValueError):
+        return None
+
+
 class ModelCallError(RuntimeError):
     """向上层报告归类后的模型调用错误及其是否可重试。"""
 

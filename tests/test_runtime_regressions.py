@@ -110,7 +110,11 @@ class RuntimeRegressionTests(unittest.TestCase):
         ]
         control = [{"role": "user", "content": "runtime continuation"}]
         before = deepcopy(history)
-        window = ContextManager(8000).prepare(history, trailing_messages=control)
+        # 预算恰好容纳 system + 最新大轮次 + 控制消息：中文按 ~0.6 token/字
+        # 校准后旧的 8000 硬编码已不再触发裁剪，用估算值本身作为边界。
+        window = ContextManager(
+            estimate_messages_tokens([history[0], *history[3:], *control])
+        ).prepare(history, trailing_messages=control)
         self.assertEqual(window.messages, [history[0], *history[3:], *control])
         self.assertEqual(window.omitted_messages, 2)
         self.assertEqual(window.estimated_tokens, estimate_messages_tokens(window.messages))

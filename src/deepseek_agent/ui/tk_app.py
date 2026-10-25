@@ -1,11 +1,13 @@
 """构建 Tk 桌面应用，并协调后台 Agent 线程和主线程界面事件。"""
 
 import logging
+import json
 import queue
 import threading
 import time
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
+from pathlib import Path
 from typing import Any
 
 from ..agent import Agent
@@ -78,6 +80,7 @@ class AgentApp:
         logger: logging.Logger | None = None,
     ) -> None:
         self._root = root
+        self._workspace_root = settings.workspace_root
         self._events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self._closing = threading.Event()
         self._cancel = threading.Event()
@@ -131,7 +134,8 @@ class AgentApp:
         )
 
     def _configure_window(self) -> None:
-        self._root.title("DeepSeek Agent")
+        self._root.title("学生求职助手 · Agent／后端" if getattr(self._agent, "career_enabled", False)
+                         else "DeepSeek Agent")
         self._root.geometry("1180x780")
         self._root.minsize(820, 600)
         self._root.configure(background=APP_BACKGROUND)
@@ -179,6 +183,7 @@ class AgentApp:
             self._main_panel,
             on_prompt_suggestion=self._use_prompt_suggestion,
             focus_composer=lambda: self._input.focus_set(),
+            career_mode=bool(getattr(self._agent, "career_enabled", False)),
         )
         self._conversation.grid(row=1, column=0, sticky="nsew")
         self._build_input(self._main_panel)
@@ -243,6 +248,65 @@ class AgentApp:
             "<<ComboboxSelected>>",
             self._change_model,
         )
+        if getattr(self._agent, "career_enabled", False):
+            actions = ttk.Frame(header, style="App.TFrame")
+            actions.grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 0))
+            buttons = [
+                ("导入简历", self._import_career_resume),
+                ("简历诊断", lambda: self._use_prompt_suggestion(
+                    "请诊断我的简历，优先指出三项问题。没有简历时，先帮我访谈和整理项目经历。")),
+                ("岗位分析", lambda: self._use_prompt_suggestion(
+                    "请对照我的简历与目标 Agent／后端岗位分析匹配依据和缺口。缺少 JD 时请先询问。")),
+                ("项目面试", lambda: self._use_prompt_suggestion(
+                    "请围绕我的项目与目标岗位进行模拟面试，一次问一个问题。")),
+                ("求职记忆", self._show_career_memory),
+                ("删除事实", self._forget_career_fact),
+            ]
+            for index, (label, callback) in enumerate(buttons):
+                ttk.Button(actions, text=label, command=callback,
+                           style="Header.TButton").grid(row=index // 3, column=index % 3,
+                                                        sticky="w", padx=(0, 6), pady=(0, 3))
+
+    def _import_career_resume(self) -> None:
+        if self._is_busy():
+            return
+        path = filedialog.askopenfilename(
+            parent=self._root, title="选择工作区中的简历", initialdir=str(self._workspace_root),
+            filetypes=[("简历", "*.pdf *.docx *.txt *.md"), ("所有文件", "*.*")])
+        if not path:
+            return
+        try:
+            relative = Path(path).resolve().relative_to(self._workspace_root.resolve()).as_posix()
+        except ValueError:
+            messagebox.showerror("文件不在工作区", "请将简历放入 AGENT_WORKSPACE 目录，或直接粘贴文字。",
+                                 parent=self._root)
+            return
+        self._use_prompt_suggestion(
+            f"请导入我的简历，工作区相对路径：{relative}\n"
+            "使用 import_career_document 保存来源，再诊断最值得修改的三项问题。")
+
+    def _show_career_memory(self) -> None:
+        if self._is_busy():
+            return
+        try:
+            snapshot = self._agent.career_snapshot()
+            messagebox.showinfo("求职记忆 · 用户确认事实", json.dumps(snapshot, ensure_ascii=False, indent=2),
+                                parent=self._root)
+        except ValueError as error:
+            messagebox.showerror("读取失败", str(error), parent=self._root)
+
+    def _forget_career_fact(self) -> None:
+        if self._is_busy():
+            return
+        fact_id = simpledialog.askstring("删除长期事实", "输入求职记忆中的完整事实 ID：", parent=self._root)
+        if not fact_id or not messagebox.askyesno(
+            "确认删除", "删除该事实及纠正历史？原简历和聊天历史仍保留。", parent=self._root):
+            return
+        try:
+            self._agent.forget_career_fact(fact_id.strip())
+            self._status.set("长期事实已删除；依赖该事实的报告需要重新生成")
+        except ValueError as error:
+            messagebox.showerror("删除失败", str(error), parent=self._root)
 
     def _build_input(self, main: ttk.Frame) -> None:
         composer = ttk.Frame(main, style="Card.TFrame", padding=(12, 9))

@@ -36,7 +36,8 @@ class DateTimeTool(Tool):
         timezone_name = timezone_name.strip()
         try:
             resolved_timezone: tzinfo = ZoneInfo(timezone_name)
-        except ZoneInfoNotFoundError as error:
+        except (ZoneInfoNotFoundError, ValueError) as error:
+            # ZoneInfo 对绝对路径或含 ".." 的键会抛 ValueError 而不是未找到。
             if timezone_name == CHINA_TIMEZONE_NAME:
                 resolved_timezone = CHINA_TIMEZONE
             else:

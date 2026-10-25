@@ -9,6 +9,8 @@ from typing import Callable
 from uuid import uuid4
 
 from .config import PROJECT_ROOT, Settings
+from .career.service import CareerService
+from .career.store import CareerStore
 from .context import ContextManager, ContextWindow
 from .conversation import Conversation, Message
 from .journal import RecoveryIssue, RunJournal, RunJournalError
@@ -35,7 +37,7 @@ from .planning import (
     PlanKind,
     TaskPlan,
 )
-from .reliability import RetryPolicy, RetryingChatModel
+from .reliability import ModelCancelledError, RetryPolicy, RetryingChatModel
 from .runtime import AgentEvent, RunStatus, TurnOutcome, TurnRuntimeState
 from .tools import ToolEffect, ToolRegistry, build_default_registry
 from .timekeeping import CHINA_TIMEZONE_NAME, now_china
@@ -180,18 +182,23 @@ class Agent:
             )
         )
         self._conversation = Conversation(settings.system_prompt)
+        career_root = (
+            (PROJECT_ROOT / "data" if session_store is None else session_store.directory.parent)
+            / "career" / settings.career_profile_id
+        )
+        career_enabled = settings.agent_mode == "career"
         effective_session_store = session_store or JsonSessionStore(
-            Path(DEFAULT_SESSION_DIRECTORY)
+            career_root / "sessions" if career_enabled else Path(DEFAULT_SESSION_DIRECTORY)
         )
         journal_directory = (
-            Path(DEFAULT_RUN_DIRECTORY)
+            (career_root / "runs" if career_enabled else Path(DEFAULT_RUN_DIRECTORY))
             if session_store is None
             else effective_session_store.directory / ".runs"
         )
         self._run_journal = run_journal or RunJournal(journal_directory)
         self._recovery_issues = self._load_recovery_issues()
         effective_project_store = project_store or JsonProjectStore(
-            Path(DEFAULT_PROJECT_FILE)
+            career_root / "projects.json" if career_enabled else Path(DEFAULT_PROJECT_FILE)
         )
         self._sessions = SessionCoordinator(
             self._conversation,
@@ -204,6 +211,13 @@ class Agent:
         self._confirmer = (
             confirmer if confirmer is not None else ConsoleToolConfirmer()
         )
+        self._career = (
+            CareerService(CareerStore(career_root / "profile.sqlite3"),
+                          settings.workspace_root, settings.max_file_size)
+            if career_enabled else None
+        )
+        if self._career is not None:
+            self._tools = self._career.registry(self._tools)
         self._tool_executor = ToolExecutor(self._tools, self._confirmer)
         self._plan_runtime.restore(self._sessions.current.plan)
         # 回滚结果状态用于记录最近一次中断所采用的处理方式。
@@ -266,7 +280,24 @@ class Agent:
         self._last_turn_history_preserved = False
         self._last_turn_outcome = None
         self._conversation.add_user(prompt)
+        if self._career is not None:
+            self._career.current_user = prompt
         return progress
+
+    @property
+    def career_enabled(self) -> bool:
+        return self._career is not None
+
+    def career_snapshot(self) -> dict[str, object]:
+        if self._career is None:
+            raise ValueError("当前不是求职模式，请使用 career.py 或 AGENT_MODE=career。")
+        return self._career.store.snapshot(limit=200)
+
+    def forget_career_fact(self, fact_id: str) -> None:
+        """供用户界面显式删除事实；聊天历史和原始材料不会随之删除。"""
+        if self._career is None:
+            raise ValueError("当前不是求职模式。")
+        self._career.store.forget_fact(fact_id)
 
     def _run_turn_loop(
         self,
@@ -395,15 +426,24 @@ class Agent:
                 for schema in tool_schemas
                 if schema.get("function", {}).get("name") == "update_plan"
             ]
-        for event in self._model.stream(model_messages, tool_schemas):
-            self._raise_if_cancelled(callbacks.should_cancel)
-            if isinstance(event, TextDelta):
-                self._emit_text(event.content, callbacks)
-                answer_parts.append(event.content)
-            elif isinstance(event, ReasoningDelta):
-                reasoning_parts.append(event.content)
-            elif isinstance(event, ToolCallRequest):
-                tool_requests.append(event)
+        # 把停止信号传给重试层，退避等待期间也能立即取消而不是卡满退避时间。
+        try:
+            for event in self._model.stream(
+                model_messages,
+                tool_schemas,
+                should_cancel=callbacks.should_cancel,
+            ):
+                self._raise_if_cancelled(callbacks.should_cancel)
+                if isinstance(event, TextDelta):
+                    self._emit_text(event.content, callbacks)
+                    answer_parts.append(event.content)
+                elif isinstance(event, ReasoningDelta):
+                    reasoning_parts.append(event.content)
+                elif isinstance(event, ToolCallRequest):
+                    tool_requests.append(event)
+        except ModelCancelledError as error:
+            # 退避等待中的取消走与其它取消相同的保留/回滚逻辑。
+            raise AgentCancelledError("本轮对话已停止。") from error
         progress.reasoning_content = "".join(reasoning_parts)
         return answer_parts, tool_requests
 
@@ -892,6 +932,7 @@ class Agent:
             first["content"] = (
                 str(first.get("content", ""))
                 + self._runtime_date_context(now_china())
+                + (self._career.runtime_context() if self._career is not None else "")
             )
             messages[0] = first
         history_length = len(self._conversation.messages)

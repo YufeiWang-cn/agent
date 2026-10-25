@@ -13,4 +13,10 @@ data/sessions/
 data/runs/
 data/evals/
 data/projects.json
+data/career/
 logs/
+.vscode/
+.mypy_cache/
+.ruff_cache/
+# 工作区根目录的 PDF 是用户放入的个人简历，不属于项目文件。
+/*.pdf

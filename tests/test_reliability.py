@@ -12,6 +12,7 @@ from deepseek_agent.models import TextDelta, UsageUpdate
 from deepseek_agent.observability import RuntimeMetrics, build_file_logger
 from deepseek_agent.reliability import (
     ModelCallError,
+    ModelCancelledError,
     RetryableModelError,
     RetryPolicy,
     RetryingChatModel,
@@ -168,6 +169,56 @@ class RetryingChatModelTests(unittest.TestCase):
         self.assertEqual(clock.sleeps, [1.0, 2.0])
         self.assertEqual(metrics.retries, 2)
         self.assertEqual(metrics.failed_requests, 1)
+
+    def test_exponential_backoff_is_capped(self) -> None:
+        self.assertEqual(
+            RetryPolicy(base_delay_seconds=10.0, max_delay_seconds=30.0).delay_for_retry(1),
+            10.0,
+        )
+        self.assertEqual(
+            RetryPolicy(base_delay_seconds=10.0, max_delay_seconds=30.0).delay_for_retry(2),
+            20.0,
+        )
+        self.assertEqual(
+            RetryPolicy(base_delay_seconds=10.0, max_delay_seconds=30.0).delay_for_retry(5),
+            30.0,
+        )
+
+    def test_cancel_during_retry_wait_stops_immediately(self) -> None:
+        model, base_model, _metrics, clock = self.build_model(
+            [
+                RetryableModelError("temporary 1"),
+                [TextDelta("不应到达")],
+            ]
+        )
+        cancelled = {"value": False}
+
+        def should_cancel() -> bool:
+            # 第一个轮询片睡完后立即置位，模拟用户在退避期间点击停止。
+            return len(clock.sleeps) >= 1 or cancelled["value"]
+
+        events = iter(model.stream([], [], should_cancel=should_cancel))
+        with self.assertRaises(Exception) as raised:
+            for _ in events:
+                pass
+
+        self.assertIsInstance(raised.exception, ModelCancelledError)
+        # 取消在第一个 0.1s 轮询片内生效，而不是等满整段退避时间。
+        self.assertEqual(clock.sleeps, [0.1])
+        self.assertEqual(base_model.calls, 1)
+
+    def test_wait_without_cancel_check_sleeps_once(self) -> None:
+        model, _base_model, _metrics, clock = self.build_model(
+            [
+                RetryableModelError("temporary 1"),
+                [TextDelta("成功")],
+            ]
+        )
+
+        events = list(model.stream([], []))
+
+        self.assertEqual(events, [TextDelta("成功")])
+        self.assertEqual(clock.sleeps, [1.0])
 
     def test_file_log_does_not_include_message_content(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

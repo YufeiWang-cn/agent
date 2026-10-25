@@ -85,7 +85,46 @@ class DeepSeekModelTests(unittest.TestCase):
         self.assertEqual(events, [TextDelta("你"), TextDelta("好")])
         self.assertEqual(
             completions.requests,
-            [{"model": "test-model", "messages": messages, "stream": True}],
+            [
+                {
+                    "model": "test-model",
+                    "messages": messages,
+                    "stream": True,
+                    "stream_options": {"include_usage": True},
+                }
+            ],
+        )
+
+    def test_thinking_disabled_only_depends_on_last_assistant_message(self) -> None:
+        """旧会话里缺少 reasoning 的历史消息不应永久关闭思考模式。"""
+        model, completions = self.build_model(
+            [_chunk(content="好", finish_reason="stop")]
+        )
+        old_messages_without_reasoning = [
+            {"role": "user", "content": "旧问题"},
+            {"role": "assistant", "content": "旧回答"},
+            {"role": "user", "content": "新问题"},
+            {
+                "role": "assistant",
+                "content": "新回答",
+                "reasoning_content": "思考过程",
+            },
+        ]
+
+        list(model.stream(old_messages_without_reasoning, []))
+
+        request = completions.requests[0]
+        self.assertNotIn("extra_body", request)
+
+        only_old_messages = [
+            {"role": "user", "content": "旧问题"},
+            {"role": "assistant", "content": "旧回答"},
+        ]
+        list(model.stream(only_old_messages, []))
+
+        self.assertEqual(
+            completions.requests[1]["extra_body"],
+            {"thinking": {"type": "disabled"}},
         )
 
     def test_tool_call_fragments_are_assembled_by_index(self) -> None:
