@@ -25,6 +25,7 @@ from .web_sources import (
     PublicWebUrlError,
     normalize_public_web_url,
     source_id_for_url,
+    validate_configured_domains,
 )
 
 
@@ -35,7 +36,6 @@ DEFAULT_MINIMUM_SCORE = 0.25
 MAX_RESULTS = 10
 MAX_AUTO_CALLS_PER_TURN = 5
 MAX_QUERY_LENGTH = 400
-MAX_CONFIGURED_DOMAINS = 50
 MAX_RESULT_TITLE_LENGTH = 300
 MAX_RESULT_CONTENT_LENGTH = 1_500
 MAX_PUBLISHED_DATE_LENGTH = 100
@@ -68,11 +68,6 @@ PRIVATE_KEY_PATTERN = re.compile(
 CREDENTIAL_ASSIGNMENT_PATTERN = re.compile(
     r"\b(?:api[_ -]?key|access[_ -]?token|auth[_ -]?token|password|passwd|secret)"
     r"\s*[:=]\s*([^\s]+)",
-    re.IGNORECASE,
-)
-DOMAIN_PATTERN = re.compile(
-    r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
-    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z",
     re.IGNORECASE,
 )
 PLACEHOLDER_MARKERS = (
@@ -774,26 +769,7 @@ class WebSearchTool(Tool):
 
     @staticmethod
     def _validate_domains(domains: Sequence[str], name: str) -> tuple[str, ...]:
-        if isinstance(domains, (str, bytes)):
-            raise ValueError(f"{name} 必须是域名序列，不能是字符串。")
-        if len(domains) > MAX_CONFIGURED_DOMAINS:
-            raise ValueError(
-                f"{name} 最多配置 {MAX_CONFIGURED_DOMAINS} 个域名。"
-            )
-        normalized: list[str] = []
-        seen: set[str] = set()
-        for domain in domains:
-            if not isinstance(domain, str):
-                raise ValueError(f"{name} 中只能包含字符串域名。")
-            value = domain.strip().casefold().removeprefix("www.")
-            if not DOMAIN_PATTERN.fullmatch(value):
-                raise ValueError(
-                    f"{name} 包含无效域名：{domain!r}；请勿填写协议、路径或通配符。"
-                )
-            if value not in seen:
-                normalized.append(value)
-                seen.add(value)
-        return tuple(normalized)
+        return validate_configured_domains(domains, name)
 
     @staticmethod
     def _normalize_query(query: str) -> str:

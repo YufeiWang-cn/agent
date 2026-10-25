@@ -33,6 +33,36 @@ HOST_PATTERN = re.compile(
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z",
     re.IGNORECASE,
 )
+# 允许/排除域名列表的统一上限与格式，搜索和网页读取共用同一套校验，
+# 避免某一侧配置了无效域名后排除策略静默失效。
+MAX_CONFIGURED_DOMAINS = 50
+CONFIGURED_DOMAIN_PATTERN = re.compile(
+    r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z",
+    re.IGNORECASE,
+)
+
+
+def validate_configured_domains(domains: Sequence[str], name: str) -> tuple[str, ...]:
+    """校验并规范化一组配置域名：拒绝 URL、路径、通配符和重复项。"""
+    if isinstance(domains, (str, bytes)):
+        raise ValueError(f"{name} 必须是域名序列，不能是字符串。")
+    if len(domains) > MAX_CONFIGURED_DOMAINS:
+        raise ValueError(f"{name} 最多配置 {MAX_CONFIGURED_DOMAINS} 个域名。")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for domain in domains:
+        if not isinstance(domain, str):
+            raise ValueError(f"{name} 中只能包含字符串域名。")
+        value = domain.strip().casefold().removeprefix("www.")
+        if not CONFIGURED_DOMAIN_PATTERN.fullmatch(value):
+            raise ValueError(
+                f"{name} 包含无效域名：{domain!r}；请勿填写协议、路径或通配符。"
+            )
+        if value not in seen:
+            normalized.append(value)
+            seen.add(value)
+    return tuple(normalized)
 
 
 class PublicWebUrlError(ValueError):

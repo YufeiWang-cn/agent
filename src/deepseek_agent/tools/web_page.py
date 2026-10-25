@@ -23,6 +23,7 @@ from .web_sources import (
     PublicWebUrlError,
     normalize_public_web_url,
     source_id_for_url,
+    validate_configured_domains,
 )
 
 
@@ -249,8 +250,10 @@ class ReadWebPageTool(Tool):
         self._chunks_per_source = chunks_per_source
         self._extract_depth = extract_depth
         self._max_content_chars = max_content_chars
-        self._excluded_domains = tuple(
-            domain.casefold().removeprefix("www.") for domain in excluded_domains
+        # 与搜索侧同一套域名校验：填成 URL 或路径时立即报配置错误，
+        # 而不是让排除策略静默匹配不到任何主机名。
+        self._excluded_domains = validate_configured_domains(
+            excluded_domains, "excluded_domains"
         )
         self._client = client or TavilyExtractClient(api_key)
         self.parameters = deepcopy(type(self).parameters)

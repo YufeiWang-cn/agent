@@ -42,29 +42,43 @@ class CareerService:
         )
 
     def runtime_context(self) -> str:
-        snapshot = self.store.snapshot(self.current_user, limit=8)
+        # 每轮对话都会调用；事实索引最多 200 条，逐条追加后全量
+        # json.dumps 一次是 O(n²) 的重复序列化，这里改为增量累计长度。
+        snapshot = self.store.snapshot(
+            self.current_user,
+            limit=8,
+            include_quotes=False,
+        )
         compact: Json = dict(
-            facts=[],
             documents=snapshot["documents"][:6],
             reviews=snapshot["reviews"][:6],
             total_facts=len(snapshot["fact_index"]),
-            remaining_fact_keys=[],
         )
+        base_length = len(json.dumps(compact, ensure_ascii=False))
+        facts: list[Json] = []
+        facts_length = 0
         for fact in snapshot["facts"]:
             item = {
                 key: fact[key] for key in ("id", "fact_key", "category", "statement", "revision")
             }
-            compact["facts"].append(item)
-            if len(json.dumps(compact, ensure_ascii=False)) > 6500:
-                compact["facts"].pop()
+            item_length = len(json.dumps(item, ensure_ascii=False)) + 1
+            if base_length + facts_length + item_length > 6500:
                 break
-        selected_ids = {fact["id"] for fact in compact["facts"]}
+            facts.append(item)
+            facts_length += item_length
+        selected_ids = {fact["id"] for fact in facts}
+        remaining_keys: list[Json] = []
+        keys_length = 0
         for fact in snapshot["fact_index"]:
-            if fact["id"] not in selected_ids:
-                compact["remaining_fact_keys"].append(fact)
-                if len(json.dumps(compact, ensure_ascii=False)) > 8000:
-                    compact["remaining_fact_keys"].pop()
-                    break
+            if fact["id"] in selected_ids:
+                continue
+            item_length = len(json.dumps(fact, ensure_ascii=False)) + 1
+            if base_length + facts_length + keys_length + item_length > 8000:
+                break
+            remaining_keys.append(fact)
+            keys_length += item_length
+        compact["facts"] = facts
+        compact["remaining_fact_keys"] = remaining_keys
         return (
             "\n\n[求职业务规则]\n"
             + self.policy

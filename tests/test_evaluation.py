@@ -200,6 +200,25 @@ class EvaluationTests(unittest.TestCase):
         with self.assertRaisesRegex(EvalCaseError, "未知字段"):
             load_cases(invalid)
 
+    def test_case_loader_rejects_windows_drive_paths(self) -> None:
+        """盘符路径过不了 PurePosixPath 的绝对判断，必须显式拒绝。"""
+        for path in ("C:/foo/bar.txt", "C:\\foo\\bar.txt", "D:\\secret.txt"):
+            with self.subTest(path=path):
+                case_path = self.root / "case.json"
+                case_path.write_text(
+                    json.dumps(
+                        {
+                            "id": "sample",
+                            "prompt": "读取文件",
+                            "fixture": "fixture",
+                            "expected": {"allowed_files_changed": [path]},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(EvalCaseError, "相对文件路径"):
+                    load_cases(case_path)
+
     def test_all_bundled_cases_are_valid(self) -> None:
         cases = load_cases(PROJECT_ROOT / "evals" / "cases")
 

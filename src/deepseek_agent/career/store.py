@@ -200,10 +200,28 @@ class CareerStore:
                 raise CareerDataError("事实不存在于当前档案。")
             db.execute("DELETE FROM fact_history WHERE fact_id=?", (fact_id,))
 
-    def snapshot(self, query: str = "", limit: int = 20) -> Json:
+    def snapshot(
+        self,
+        query: str = "",
+        limit: int = 20,
+        *,
+        include_quotes: bool = True,
+    ) -> Json:
+        """返回事实、文档与评价的轻量快照。
+
+        ``include_quotes=False`` 时不取最长 2000 字的 ``source_quote`` 列，
+        供每轮都要调用的运行时上下文使用；recall 等展示场景仍取全列。
+        """
+        fact_columns = (
+            "*" if include_quotes else
+            "id,fact_key,category,statement,source_id,revision,updated_at"
+        )
         with self.connection() as db:
             facts = [
-                dict(row) for row in db.execute("SELECT * FROM facts ORDER BY updated_at DESC")
+                dict(row)
+                for row in db.execute(
+                    f"SELECT {fact_columns} FROM facts ORDER BY updated_at DESC"
+                )
             ]
             documents = [
                 dict(row)

@@ -294,7 +294,18 @@ def run(arguments: list[str] | None = None) -> int:
         failed_workspace_directory=failed_directory,
         command_executor=command_executor,
     )
-    results = runner.run_cases(cases, repeat=options.repeat)
+    try:
+        results = runner.run_cases(cases, repeat=options.repeat)
+    except KeyboardInterrupt:
+        # 中断不应丢弃已经花费 Token 得到的结果；写出部分报告后退出。
+        results = runner.partial_results
+        if not results:
+            print("已中断：没有任何用例完成，不生成报告。", file=sys.stderr)
+            return 130
+        print(
+            f"已中断：保留已完成的 {len(results)} 条用例结果并写入报告。",
+            file=sys.stderr,
+        )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
         json.dumps(

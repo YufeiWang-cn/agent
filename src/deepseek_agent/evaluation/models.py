@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, cast
 
 
@@ -45,8 +45,15 @@ def _string_tuple(value: object, name: str) -> tuple[str, ...]:
 def _path_tuple(value: object, name: str) -> tuple[str, ...]:
     paths = _string_tuple(value, name)
     for path_text in paths:
+        # PurePosixPath 不认 Windows 盘符（"C:/foo" 不是绝对路径），
+        # 盘符形态要单独拒绝，否则这类条目永远不会匹配快照键、检查静默失效。
         path = PurePosixPath(path_text.replace("\\", "/"))
-        if path.is_absolute() or ".." in path.parts or path_text in {"", "."}:
+        if (
+            path.is_absolute()
+            or ".." in path.parts
+            or path_text in {"", "."}
+            or PureWindowsPath(path_text).is_absolute()
+        ):
             raise EvalCaseError(f"{name} 只能包含工作区内的相对文件路径。")
     return tuple(path.replace("\\", "/") for path in paths)
 

@@ -54,6 +54,8 @@ class EvalRunner:
         self._trace_grader = TraceGrader()
         self._safety_grader = SafetyGrader()
         self._answer_grader = AnswerGrader()
+        # Ctrl+C 中断时保留已完成用例的结果，供调用方写出部分报告。
+        self.partial_results: tuple[EvalResult, ...] = ()
 
     def run_cases(
         self,
@@ -65,11 +67,15 @@ class EvalRunner:
         if repeat <= 0:
             raise ValueError("repeat 必须是正整数。")
         case_values = tuple(cases)
-        return tuple(
-            self.run_case(case, attempt=attempt)
-            for case in case_values
-            for attempt in range(1, repeat + 1)
-        )
+        results: list[EvalResult] = []
+        try:
+            for case in case_values:
+                for attempt in range(1, repeat + 1):
+                    results.append(self.run_case(case, attempt=attempt))
+        except KeyboardInterrupt:
+            self.partial_results = tuple(results)
+            raise
+        return tuple(results)
 
     def run_case(self, case: EvalCase, *, attempt: int = 1) -> EvalResult:
         """在一次性目录中执行案例，并在失败时按需保存现场。"""
