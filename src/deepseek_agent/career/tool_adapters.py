@@ -16,6 +16,7 @@ from .commands import (
     SaveReview,
 )
 from .domain import CareerDataError, Json
+from .network_tools import CareerNetworkTool
 
 if TYPE_CHECKING:
     from .service import CareerService
@@ -76,7 +77,13 @@ def build_career_registry(service: "CareerService", existing: ToolRegistry) -> T
     )
 
     names = {"update_plan", "get_current_time", "calculator", "web_search", "read_web_page"}
-    safe_tools = [existing.get(name) for name in existing.names if name in names]
+    safe_tools = [
+        CareerNetworkTool(existing.get(name))
+        if name in {"web_search", "read_web_page"}
+        else existing.get(name)
+        for name in existing.names
+        if name in names
+    ]
     return ToolRegistry(
         [
             *safe_tools,

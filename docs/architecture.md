@@ -85,7 +85,7 @@ Tk 的 `AgentChatRunner` 和 CLI 使用统一 `AgentEvent` 流展示文本、工
 
 新增 `test_architecture.py` 验证运行时/业务依赖边界、独立上下文、无 SQLite 的用例执行和故障回滚；`test_application_contracts.py` 验证确认、来源/过期检查的一致性以及事件身份和无重复展示。
 
-报告正文与初稿依赖已补全。联网隐私控制、持久业务任务、操作幂等、硬预算和求职真实模型评测仍是后续计划。单用户、单进程的本地使用仍是当前适用范围。
+报告正文与初稿依赖已补全。求职联网增加 `career/privacy.py` 参数检查与 `career/network_tools.py` 工具适配器，在业务注册表接入逐次确认并复用原有网络客户端；不修改通用模式或通用执行器。持久业务任务、操作幂等、硬预算和求职真实模型评测仍是后续计划。单用户、单进程的本地使用仍是当前适用范围。
 
 ### 核心结构重构验证记录（2026-11-21，证据依赖改进之前）
 
@@ -118,3 +118,32 @@ git diff --check
 - 开启分支覆盖的总覆盖率为 79.61%，通过 75% 门槛；Ruff 与 Mypy（83 个源文件，沿用项目配置）通过。
 - 原有求职用例和入口测试更新为结构化报告输入，保留原有业务断言；旧 Markdown 入口另有禁止接受/导出的回归。
 - 仅使用临时数据库与合成材料，没有主动升级真实档案、调用外部模型或进行手工 GUI 全流程验收。
+
+### 求职联网隐私验证记录（2026-11-21）
+
+先用假网络 transport 复现搜索手机号外发、网页 question 邮箱外发，以及自动额度内绕过用户拒绝的三项问题；修复前均失败。新增 `test_career_privacy.py` 共 12 项，验证敏感内容阻止、编码检查、完整预览、拒绝/取消零请求、中英文双路确认、普通岗位查询与通用模式兼容。
+
+- 相关回归 90 项通过；Ruff、Mypy（85 个源文件）和差异检查通过。
+- 初次全量运行在已有双路搜索取消测试处触发 `Tcl_AsyncDelete: async handler deleted by the wrong thread`；后台线程触发垃圾回收时销毁了前面测试遗留的 Tk 对象。
+- 使用临时测试入口关闭自动循环垃圾回收，并在每项测试结束后于主线程主动收集，仍发现并执行全部 404 项测试：403 项通过，1 项因 Docker 服务不可用跳过。分支覆盖开启的总覆盖率为 79.71%。没有跳过 GUI 测试或修改测试断言；此测试入口规避回收时机问题，并不表示已修复产品中的 Tk 对象生命周期。
+- 没有调用真实搜索服务或付费模型，没有发送真实个人材料。本次不包括全局历史日志脱敏或模型请求的隐私治理。
+
+必要时可将下列内容保存为临时脚本，从仓库根目录以 `python -m coverage run <脚本路径>` 复现主线程回收的测试入口：
+
+```python
+import gc
+import unittest
+
+class MainThreadCollectionResult(unittest.TextTestResult):
+    def stopTest(self, test):
+        super().stopTest(test)
+        gc.collect()
+
+gc.disable()
+suite = unittest.defaultTestLoader.discover("tests")
+result = unittest.TextTestRunner(
+    verbosity=2, resultclass=MainThreadCollectionResult
+).run(suite)
+gc.collect()
+raise SystemExit(not result.wasSuccessful())
+```
