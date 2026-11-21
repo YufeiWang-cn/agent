@@ -5,6 +5,7 @@ from dataclasses import replace
 
 from .agent import Agent, AgentCancelledError
 from .config import PROJECT_ROOT, Settings
+from .career.commands import ForgetFact, RecallMemory
 from .conversation import Message
 from .memory import ProjectStoreError, SessionStoreError
 from .models import ToolCallRequest
@@ -143,14 +144,14 @@ class CliApplication:
                     self._chat(f"这是我的{kind}，请导入来源并分析：\n" + "\n".join(lines))
             return True
         if command == "/memory":
-            print(json.dumps(self._agent.career_snapshot(), ensure_ascii=False, indent=2))
+            print(json.dumps(self._agent.career_application.execute(RecallMemory(limit=200)), ensure_ascii=False, indent=2))
         elif command == "/forget":
             if not argument.strip():
                 print("用法：/forget <事实 ID>；ID 可从 /memory 查看。")
             else:
                 try:
                     if input("删除这条长期事实及纠正历史？输入 y 确认：").strip().lower() == "y":
-                        self._agent.forget_career_fact(argument.strip())
+                        self._agent.career_application.execute(ForgetFact(argument.strip()), confirmed=True)
                         print("已删除长期事实；原始简历和聊天历史仍保留。")
                 except (ValueError, EOFError, KeyboardInterrupt) as error:
                     print(f"删除未完成：{error}")
@@ -188,15 +189,18 @@ class CliApplication:
             print(f"[工具结果] {_clip(result)}")
 
         def print_runtime_event(event: AgentEvent) -> None:
-            if event.type is AgentEventType.PLAN_UPDATED and event.plan is not None:
+            if event.type is AgentEventType.TEXT_DELTA:
+                print_text(event.content or "")
+            elif event.type is AgentEventType.TOOL_CALL and event.tool_call is not None:
+                print_tool_call(event.tool_call)
+            elif event.type is AgentEventType.TOOL_RESULT and event.tool_call is not None:
+                print_tool_result(event.tool_call, event.tool_result or "", event.tool_record)
+            elif event.type is AgentEventType.PLAN_UPDATED and event.plan is not None:
                 self._print_plan(event.plan)
 
         try:
             outcome = self._agent.chat(
                 prompt,
-                on_text=print_text,
-                on_tool_call=print_tool_call,
-                on_tool_result=print_tool_result,
                 on_event=print_runtime_event,
             )
             if started_output:

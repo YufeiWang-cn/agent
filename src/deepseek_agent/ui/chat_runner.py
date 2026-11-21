@@ -26,28 +26,22 @@ class AgentChatRunner:
         try:
             outcome = self._agent.chat(
                 prompt,
-                on_text=lambda content: self._put("text", content),
-                on_tool_call=lambda request: self._put("tool_call", request),
-                on_tool_result=lambda request, result, status: self._put(
-                    "tool_result",
-                    (request, result, status.value),
-                ),
                 on_event=self._queue_runtime_event,
                 should_cancel=self._cancel.is_set,
             )
         except AgentCancelledError as error:
-            outcome = error.outcome
+            interrupted_outcome = error.outcome
             history_preserved = (
-                outcome.history_preserved
-                if outcome is not None
+                interrupted_outcome.history_preserved
+                if interrupted_outcome is not None
                 else error.tool_records_preserved
             )
             self._put("cancelled", (str(error), history_preserved))
         except Exception as error:
-            outcome = self._agent.last_turn_outcome
+            failed_outcome = self._agent.last_turn_outcome
             history_preserved = (
-                outcome.history_preserved
-                if outcome is not None
+                failed_outcome.history_preserved
+                if failed_outcome is not None
                 else self._agent.last_turn_history_preserved
             )
             self._put("error", (str(error), history_preserved))
@@ -61,7 +55,15 @@ class AgentChatRunner:
 
     def _queue_runtime_event(self, event: AgentEvent) -> None:
         """转发需要在 GUI 中即时呈现的结构化运行事件。"""
-        if event.type is AgentEventType.PLAN_UPDATED:
+        if event.type is AgentEventType.TEXT_DELTA:
+            self._put("text", event.content or "")
+        elif event.type is AgentEventType.TOOL_CALL and event.tool_call is not None:
+            self._put("tool_call", event.tool_call)
+        elif event.type is AgentEventType.TOOL_RESULT and event.tool_call is not None:
+            assert event.tool_record is not None
+            self._put("tool_result", (event.tool_call, event.tool_result,
+                                      event.tool_record.status.value))
+        elif event.type is AgentEventType.PLAN_UPDATED:
             self._put("plan_updated", event.plan)
 
     def _put(self, event_name: str, payload: Any) -> None:

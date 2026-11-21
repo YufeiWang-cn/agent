@@ -30,6 +30,8 @@ class RenderedMarkdownPreview(tk.Frame):
     def __init__(self, parent: tk.Misc, content: str) -> None:
         super().__init__(parent, background=EDITOR_BACKGROUND)
         self._table_cards: list[MarkdownTableCard] = []
+        self._resize_job: str | None = None
+        self._pending_table_width = 0
         self.text = ScrolledText(
             self,
             wrap="word",
@@ -49,7 +51,16 @@ class RenderedMarkdownPreview(tk.Frame):
         self._configure_tags()
         self._render(content)
         self.text.configure(state="disabled")
-        self.text.bind("<Configure>", self._resize_tables)
+        self.text.bind("<Configure>", self._schedule_resize_tables)
+
+    def destroy(self) -> None:
+        if self._resize_job is not None:
+            try:
+                self.after_cancel(self._resize_job)
+            except tk.TclError:
+                pass
+            self._resize_job = None
+        super().destroy()
 
     def _configure_tags(self) -> None:
         for level, size in ((1, 18), (2, 16), (3, 14), (4, 12), (5, 12), (6, 12)):
@@ -152,10 +163,27 @@ class RenderedMarkdownPreview(tk.Frame):
                 segment_tags = (*tags, "emoji") if is_emoji else tags
                 self.text.insert("end", segment, segment_tags)
 
-    def _resize_tables(self, event: tk.Event | None = None) -> None:
-        width = event.width if event is not None else self.text.winfo_width()
-        for card in self._table_cards:
-            card.set_width(max(260, width - 44))
+    def _schedule_resize_tables(self, event: tk.Event | None = None) -> None:
+        """防抖处理预览窗口缩放：拖动中不逐帧重排表格，稳定后批量应用。"""
+        if event is not None:
+            self._pending_table_width = event.width
+        if self._resize_job is not None or not self.winfo_exists():
+            return
+        self._resize_job = self.after(120, self._flush_resize_tables)
+
+    def _flush_resize_tables(self) -> None:
+        self._resize_job = None
+        width = self._pending_table_width or self.text.winfo_width()
+        pending = [
+            card
+            for card in self._table_cards
+            if card.set_width(max(260, width - 44), defer=True)
+        ]
+        if not pending:
+            return
+        self.text.update_idletasks()
+        for card in pending:
+            card.finalize_width()
 
 
 class MarkdownCodeCard:

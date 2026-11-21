@@ -7,7 +7,7 @@ from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
 from ..workspace import WorkspaceGuard
-from .store import CareerDataError
+from .domain import CareerDataError
 
 
 class DocumentReader:

@@ -28,6 +28,9 @@ class AgentEvent:
     tool_result: str | None = None
     tool_record: ToolExecutionRecord | None = None
     plan: TaskPlan | None = None
+    run_id: str | None = None
+    turn_id: str | None = None
+    sequence: int = 0
 
     @classmethod
     def turn_started(cls) -> "AgentEvent":

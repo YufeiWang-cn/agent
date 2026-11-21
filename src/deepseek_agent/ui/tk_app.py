@@ -12,6 +12,7 @@ from typing import Any
 
 from ..agent import Agent
 from ..config import Settings
+from ..career.commands import ForgetFact, RecallMemory
 from ..models import ToolCallRequest
 from ..runtime import TurnOutcome
 from .chat_runner import AgentChatRunner
@@ -289,7 +290,7 @@ class AgentApp:
         if self._is_busy():
             return
         try:
-            snapshot = self._agent.career_snapshot()
+            snapshot = self._agent.career_application.execute(RecallMemory(limit=200))
             messagebox.showinfo("求职记忆 · 用户确认事实", json.dumps(snapshot, ensure_ascii=False, indent=2),
                                 parent=self._root)
         except ValueError as error:
@@ -303,7 +304,7 @@ class AgentApp:
             "确认删除", "删除该事实及纠正历史？原简历和聊天历史仍保留。", parent=self._root):
             return
         try:
-            self._agent.forget_career_fact(fact_id.strip())
+            self._agent.career_application.execute(ForgetFact(fact_id.strip()), confirmed=True)
             self._status.set("长期事实已删除；依赖该事实的报告需要重新生成")
         except ValueError as error:
             messagebox.showerror("删除失败", str(error), parent=self._root)

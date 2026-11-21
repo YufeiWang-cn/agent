@@ -5,7 +5,9 @@ from typing import TYPE_CHECKING
 
 from ..tools import JsonObject, Tool, ToolEffect, ToolExecutionError
 from ..workspace import WorkspaceAccessError
-from .store import CareerDataError, text
+from .domain import CareerDataError
+from .commands import is_read_only, requires_confirmation
+from .tool_adapters import command_from_arguments
 
 if TYPE_CHECKING:
     from .service import CareerService
@@ -31,8 +33,20 @@ class CareerTool(Tool):
         except (CareerDataError, WorkspaceAccessError) as error:
             raise ToolExecutionError(str(error)) from error
 
+    def requires_confirmation_for(self, arguments: JsonObject) -> bool:
+        return requires_confirmation(command_from_arguments(self.name, arguments))
+
+    def effect_for(self, arguments: JsonObject) -> ToolEffect:
+        command = command_from_arguments(self.name, arguments)
+        return ToolEffect.READ_ONLY if is_read_only(command) else self.effect
+
     def run(self, arguments: JsonObject) -> JsonObject:
-        raise NotImplementedError
+        # ToolExecutor 是工具调用的授权边界；到达 execute 时确认已经完成。
+        return self.service.application.execute(
+            command_from_arguments(self.name, arguments),
+            user_message=self.service.run_context.user_message,
+            confirmed=True,
+        )
 
 
 class ImportCareerDocumentTool(CareerTool):
@@ -49,24 +63,6 @@ class ImportCareerDocumentTool(CareerTool):
         },
         ["kind", "title"],
     )
-
-    def run(self, arguments: JsonObject) -> JsonObject:
-        inline = arguments.get("text")
-        path = arguments.get("path")
-        if (inline is None) == (path is None):
-            raise CareerDataError("text 与 path 必须且只能提供一个。")
-        if path is not None:
-            path = text(path, "path", 500)
-            if path not in self.service.current_user:
-                raise CareerDataError("文件路径必须由本轮用户明确提供。")
-            content = self.service.reader.read(path)
-        else:
-            content = text(inline, "text", 50_000)
-            if content not in self.service.current_user:
-                raise CareerDataError("导入文本必须逐字来自本轮用户输入，不能导入模型生成的经历。")
-        return self.service.store.import_document(
-            arguments.get("kind", ""), arguments.get("title", ""), content
-        )
 
 
 class CareerMemoryTool(CareerTool):
@@ -93,37 +89,6 @@ class CareerMemoryTool(CareerTool):
         },
         ["action"],
     )
-
-    def requires_confirmation_for(self, arguments: JsonObject) -> bool:
-        return arguments.get("action") != "recall"
-
-    def effect_for(self, arguments: JsonObject) -> ToolEffect:
-        return ToolEffect.READ_ONLY if arguments.get("action") == "recall" else self.effect
-
-    def run(self, arguments: JsonObject) -> JsonObject:
-        action = arguments.get("action")
-        if action == "recall":
-            if arguments.get("document_id"):
-                return self.service.store.document(
-                    text(arguments["document_id"], "document_id", 64)
-                )
-            query = arguments.get("query", "")
-            if not isinstance(query, str) or len(query) > 2000:
-                raise CareerDataError("query 必须是最多 2000 字符的文本。")
-            return self.service.store.snapshot(query)
-        if action == "save":
-            return self.service.store.save_fact(
-                key=arguments.get("key", ""),
-                category=arguments.get("category", ""),
-                statement=arguments.get("statement", ""),
-                source_id=text(arguments.get("source_id"), "source_id", 64),
-                source_quote=arguments.get("source_quote", ""),
-                current_user=self.service.current_user,
-            )
-        if action == "forget":
-            self.service.store.forget_fact(text(arguments.get("fact_id"), "fact_id", 64))
-            return dict(deleted=True)
-        raise CareerDataError("action 无效。")
 
 
 class CareerReviewTool(CareerTool):
@@ -160,32 +125,6 @@ class CareerReviewTool(CareerTool):
         ["action"],
     )
 
-    def requires_confirmation_for(self, arguments: JsonObject) -> bool:
-        return arguments.get("action") == "decide"
-
-    def effect_for(self, arguments: JsonObject) -> ToolEffect:
-        return ToolEffect.READ_ONLY if arguments.get("action") == "get" else self.effect
-
-    def run(self, arguments: JsonObject) -> JsonObject:
-        action = arguments.get("action")
-        if action == "save":
-            job_id = arguments.get("job_id")
-            if job_id is not None:
-                job_id = text(job_id, "job_id", 64)
-            return self.service.store.save_review(
-                resume_id=text(arguments.get("resume_id"), "resume_id", 64),
-                job_id=job_id,
-                title=arguments.get("title", ""),
-                markdown=arguments.get("markdown", ""),
-                changes=arguments.get("changes", []),
-            )
-        review_id = text(arguments.get("review_id"), "review_id", 64)
-        if action == "get":
-            return self.service.store.review(review_id)
-        if action == "decide":
-            return self.service.store.decide_review(review_id, arguments.get("decision", ""))
-        raise CareerDataError("action 无效。")
-
 
 class ExportCareerReviewTool(CareerTool):
     name = "export_career_review"
@@ -198,22 +137,6 @@ class ExportCareerReviewTool(CareerTool):
         ["review_id", "path"],
     )
 
-    def run(self, arguments: JsonObject) -> JsonObject:
-        review_id = text(arguments.get("review_id"), "review_id", 64)
-        path = text(arguments.get("path"), "path", 500)
-        if not path.lower().endswith(".md"):
-            raise CareerDataError("导出路径必须以 .md 结尾。")
-        content = self.service.store.render_review(review_id)
-        _, created, _ = self.service.guard.prepare_text_write(path, content)
-        if not created:
-            raise CareerDataError("目标文件已存在，请选择新文件名；不会覆盖原文件。")
-        resolved, _, count = self.service.guard.write_text(path, content)
-        return dict(
-            path=self.service.guard.relative_path(resolved),
-            bytes=count,
-            status=self.service.store.review(review_id)["status"],
-        )
-
 
 class BuildResumeDraftTool(CareerTool):
     name = "build_resume_draft"
@@ -222,6 +145,3 @@ class BuildResumeDraftTool(CareerTool):
         {"fact_ids": dict(type="array", minItems=1, maxItems=100, items=dict(type="string"))},
         ["fact_ids"],
     )
-
-    def run(self, arguments: JsonObject) -> JsonObject:
-        return self.service.store.build_resume_draft(arguments.get("fact_ids", []))

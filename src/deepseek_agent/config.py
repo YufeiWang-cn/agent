@@ -9,7 +9,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from .career.store import PROFILE_ID_PATTERN
+from .career.domain import PROFILE_ID_PATTERN
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "system.md"

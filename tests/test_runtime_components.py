@@ -10,7 +10,7 @@ add_src_to_path()
 
 from deepseek_agent.plan_runtime import PlanRuntime
 from deepseek_agent.planning import TaskPlan
-from deepseek_agent.runtime import RunStatus, TurnOutcome
+from deepseek_agent.runtime import AgentEvent, RunStatus, TurnOutcome
 from deepseek_agent.ui.chat_runner import AgentChatRunner
 
 
@@ -59,9 +59,9 @@ class FakeRunnerAgent:
     last_turn_history_preserved = False
 
     def chat(self, prompt: str, **callbacks: object) -> TurnOutcome:
-        on_text = callbacks["on_text"]
-        assert callable(on_text)
-        on_text(f"收到：{prompt}")
+        on_event = callbacks["on_event"]
+        assert callable(on_event)
+        on_event(AgentEvent.text_delta(f"收到：{prompt}"))
         return TurnOutcome(
             status=RunStatus.WAITING_USER,
             final_text="请补充信息。",
