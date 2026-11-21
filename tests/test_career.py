@@ -101,7 +101,8 @@ class CareerTests(unittest.TestCase):
             resume_id=self.resume["id"],
             job_id=self.job["id"],
             title="针对开发实习的修改",
-            markdown="待补充：测试方法。",
+            findings=[],
+            general_advice=["待补充：测试方法。"],
             changes=[
                 dict(
                     original="负责工具调用和后端接口。",
@@ -529,7 +530,8 @@ class CareerTests(unittest.TestCase):
                         action="save",
                         resume_id=states["document"],
                         title="简历优化",
-                        markdown="需要补充验证方法。",
+                        findings=[],
+                        general_advice=["需要补充验证方法。"],
                         changes=[
                             dict(
                                 original="负责工具调用和后端接口。",
@@ -734,7 +736,8 @@ class CareerTests(unittest.TestCase):
             resume_id=draft["id"],
             job_id=None,
             title="初稿审阅",
-            markdown="待补充方法",
+            findings=[],
+            general_advice=["待补充方法"],
             changes=[
                 dict(
                     original="负责接口测试",

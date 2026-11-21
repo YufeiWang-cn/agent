@@ -52,6 +52,8 @@ def command_from_arguments(name: str, arguments: Json) -> CareerCommand:
                 arguments.get("title", ""),
                 arguments.get("markdown", ""),
                 arguments.get("changes", []),
+                arguments.get("findings"),
+                arguments.get("general_advice"),
             )
         if action == "get":
             return GetReview(arguments.get("review_id", ""))

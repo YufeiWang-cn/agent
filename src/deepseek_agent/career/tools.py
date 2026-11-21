@@ -94,7 +94,8 @@ class CareerMemoryTool(CareerTool):
 class CareerReviewTool(CareerTool):
     name = "career_review"
     description = (
-        "保存诊断／岗位分析和逐条修改草稿，读取报告，或经用户确认接受／拒绝。修改须引用确认事实。"
+        "保存结构化分析和逐条修改草稿，读取报告，或经用户确认接受／拒绝。"
+        "save 必须提供 findings（可为空）；个人经历判断与修改须引用确认事实。"
     )
     confirmation_description = "确认接受或拒绝这份报告。接受不会修改经历事实或覆盖原简历。"
     parameters = schema(
@@ -103,7 +104,26 @@ class CareerReviewTool(CareerTool):
             "resume_id": string("原始简历来源 ID"),
             "job_id": string("可选 JD 来源 ID"),
             "title": string("报告名称"),
-            "markdown": string("诊断、岗位分析或面试反馈正文；待补信息明确标注"),
+            "findings": dict(
+                type="array",
+                maxItems=30,
+                description="save 必填。个人经历和能力判断，每条引用事实；无判断时传空数组。",
+                items=schema(
+                    {
+                        "text": string("有事实依据的分析，不得夸大来源"),
+                        "evidence_fact_ids": dict(
+                            type="array", minItems=1, maxItems=20, items=dict(type="string")
+                        ),
+                    },
+                    ["text", "evidence_fact_ids"],
+                ),
+            ),
+            "general_advice": dict(
+                type="array",
+                maxItems=20,
+                items=dict(type="string"),
+                description="一般方法建议与待补问题；不得在此陈述或推断个人经历。",
+            ),
             "changes": dict(
                 type="array",
                 maxItems=30,

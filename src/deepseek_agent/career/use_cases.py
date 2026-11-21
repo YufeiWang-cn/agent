@@ -9,7 +9,10 @@ from .domain import (
     MAX_FACT_HISTORY_PER_FACT,
     CareerDataError,
     Json,
-    dependencies_stale,
+    dependency_issues,
+    normalize_findings,
+    normalize_advice,
+    require_current_evidence,
     normalize_change,
     text,
     validate_fact_source,
@@ -27,35 +30,68 @@ class CareerUseCases:
         return self.repository.generation
 
     def import_document(self, kind: str, title: str, content: str) -> Json:
-        if not isinstance(kind, str) or kind not in {"resume", "job", "resume_draft"}:
-            raise CareerDataError("文档类型只能是 resume、job 或 resume_draft。")
+        if not isinstance(kind, str) or kind not in {"resume", "job"}:
+            raise CareerDataError("只能导入 resume、job；初稿必须通过 build_resume_draft 生成。")
         title = text(title, "title", 200)
         content = text(content, "content", 50_000)
         with self.repository.transaction() as db:
-            existing = db.find_document(kind, content)
-            if existing:
-                return dict(existing)
-            if db.count("documents") >= 100:
-                raise CareerDataError("已保存 100 份文档，请使用新的求职档案。")
-            document = dict(
-                id=uuid4().hex,
-                kind=kind,
-                title=title,
-                content=content,
-                created_at=now_china().isoformat(),
-            )
-            db.insert_document(document)
+            return self._insert_document(db, kind, title, content, {})
+
+    @staticmethod
+    def _insert_document(
+        db: CareerTransaction, kind: str, title: str, content: str, revisions: Json
+    ) -> Json:
+        existing = db.find_document(kind, content)
+        if (
+            existing
+            and existing["dependency_status"] == "tracked"
+            and existing["fact_revisions"] == revisions
+        ):
+            return dict(existing)
+        if db.count("documents") >= 100:
+            raise CareerDataError("已保存 100 份文档，请使用新的求职档案。")
+        document = dict(
+            id=uuid4().hex,
+            kind=kind,
+            title=title,
+            content=content,
+            created_at=now_china().isoformat(),
+            fact_revisions=revisions,
+            dependency_status="tracked",
+        )
+        db.insert_document(document)
         return document
+
+    @staticmethod
+    def _annotate_evidence(record: Json, revisions: Json) -> Json:
+        record["stale_reasons"] = dependency_issues(
+            record["fact_revisions"], revisions, record["dependency_status"]
+        )
+        record["stale"] = bool(record["stale_reasons"])
+        return record
+
+    @staticmethod
+    def _current_revisions(db: CareerTransaction, dependencies: Json) -> Json:
+        revisions = {}
+        for fact_id in dependencies:
+            fact = db.fact(fact_id)
+            if fact is not None:
+                revisions[fact_id] = fact["revision"]
+        return revisions
+
+    @classmethod
+    def _read_document(cls, db: CareerTransaction, document_id: str) -> Json:
+        row = db.document(document_id)
+        if row is None:
+            raise CareerDataError("来源文档不存在于当前求职档案。")
+        return cls._annotate_evidence(row, cls._current_revisions(db, row["fact_revisions"]))
 
     def document(self, document_id: str) -> Json:
         with self.repository.transaction() as db:
-            row = db.document(document_id)
-        if row is None:
-            raise CareerDataError("来源文档不存在于当前求职档案。")
-        return dict(row)
+            return self._read_document(db, document_id)
 
     def build_resume_draft(self, fact_ids: list[str]) -> Json:
-        """只组织已确认事实，不让生成措辞反向变成新的事实来源。"""
+        """事实读取、依赖采集与初稿保存共用事务；不信任文本中的版本标记。"""
         if (
             not isinstance(fact_ids, list)
             or not fact_ids
@@ -66,15 +102,20 @@ class CareerUseCases:
         facts = []
         with self.repository.transaction() as db:
             for fact_id in dict.fromkeys(fact_ids):
-                if not isinstance(fact_id, str):
-                    raise CareerDataError("事实 ID 必须是字符串。")
                 row = db.fact(fact_id)
                 if row is None or row["category"] == "feedback":
                     raise CareerDataError(
                         "初稿只能使用当前档案中的教育、项目、技能和求职偏好事实。"
                     )
                 facts.append(dict(row))
-        return self.import_document("resume_draft", "确认事实整理初稿", render_resume_draft(facts))
+            content = text(render_resume_draft(facts), "content", 50_000)
+            return self._insert_document(
+                db,
+                "resume_draft",
+                "确认事实整理初稿",
+                content,
+                {fact["id"]: fact["revision"] for fact in facts},
+            )
 
     def save_fact(
         self,
@@ -136,9 +177,9 @@ class CareerUseCases:
             documents = db.document_index()
             reviews = db.review_index()
         revisions = {fact["id"]: fact["revision"] for fact in facts}
-        for review in reviews:
-            dependencies = review.pop("fact_revisions")
-            review["stale"] = dependencies_stale(dependencies, revisions)
+        for record in [*documents, *reviews]:
+            self._annotate_evidence(record, revisions)
+            record.pop("fact_revisions")
         terms = re.findall(r"[a-zA-Z0-9_+#.]+|[\u4e00-\u9fff]{2}", query.lower())
         if terms:
             facts.sort(
@@ -155,28 +196,53 @@ class CareerUseCases:
         )
 
     def save_review(
-        self, *, resume_id: str, job_id: str | None, title: str, markdown: str, changes: list[Json]
+        self,
+        *,
+        resume_id: str,
+        job_id: str | None,
+        title: str,
+        changes: list[Json],
+        markdown: str = "",
+        findings: list[Json] | None = None,
+        general_advice: list[str] | None = None,
     ) -> Json:
-        resume = self.document(resume_id)
-        if resume["kind"] not in {"resume", "resume_draft"}:
-            raise CareerDataError("resume_id 必须指向简历。")
-        if job_id and self.document(job_id)["kind"] != "job":
-            raise CareerDataError("job_id 必须指向岗位描述。")
         title = text(title, "title", 200)
-        markdown = text(markdown, "markdown", 30_000)
         if not isinstance(changes, list) or len(changes) > 30:
             raise CareerDataError("changes 必须是最多 30 条的列表。")
-        revisions: Json = {}
+        # 兼容旧调用的内容存档，但绝不把自由正文升级为已追踪依赖。
+        legacy = findings is None
+        if legacy:
+            markdown = text(markdown, "markdown", 30_000)
+            if general_advice is not None:
+                raise CareerDataError("结构化报告必须显式提供 findings。")
+            body: list[Json] = []
+            advice: list[str] = []
+        else:
+            if markdown != "":
+                raise CareerDataError(
+                    "结构化报告不接受自由 markdown，请使用 findings 和 general_advice。"
+                )
+            body = normalize_findings(findings)
+            advice = normalize_advice(general_advice if general_advice is not None else [])
+            if not body and not advice and not changes:
+                raise CareerDataError("报告至少需要一条正文判断、一般建议或修改。")
         normalized: list[Json] = []
         with self.repository.transaction() as db:
+            resume = self._read_document(db, resume_id)
+            if resume["kind"] not in {"resume", "resume_draft"}:
+                raise CareerDataError("resume_id 必须指向简历。")
+            require_current_evidence(resume, "来源简历初稿")
+            if job_id and self._read_document(db, job_id)["kind"] != "job":
+                raise CareerDataError("job_id 必须指向岗位描述。")
+            revisions = dict(resume["fact_revisions"])
             for change in changes:
-                item = normalize_change(change, resume["content"])
+                normalized.append(normalize_change(change, resume["content"]))
+            for item in [*body, *normalized]:
                 for fact_id in item["evidence_fact_ids"]:
                     fact = db.fact(fact_id)
                     if fact is None:
-                        raise CareerDataError("修改引用了不存在或已删除的事实。")
+                        raise CareerDataError("报告引用了不存在或已删除的事实。")
                     revisions[fact_id] = fact["revision"]
-                normalized.append(item)
             if db.count("reviews") >= 100:
                 raise CareerDataError("修改报告已达 100 份，请使用新的求职档案。")
             review: Json = dict(
@@ -185,46 +251,43 @@ class CareerUseCases:
                 job_id=job_id,
                 title=title,
                 markdown=markdown,
+                findings=body,
+                general_advice=advice,
                 changes=normalized,
                 fact_revisions=revisions,
+                dependency_status="needs_review" if legacy else "tracked",
                 status="draft",
                 created_at=now_china().isoformat(),
             )
             db.insert_review(review)
-        return self.review(review["id"])
+            return self._annotate_evidence(review, revisions)
 
     def review(self, review_id: str) -> Json:
         with self.repository.transaction() as db:
             return self._read_review(db, review_id)
 
-    @staticmethod
-    def _read_review(db: CareerTransaction, review_id: str) -> Json:
+    @classmethod
+    def _read_review(cls, db: CareerTransaction, review_id: str) -> Json:
         review = db.review(review_id)
         if review is None:
             raise CareerDataError("报告不存在于当前求职档案。")
-        revisions = {}
-        for fact_id in review["fact_revisions"]:
-            fact = db.fact(fact_id)
-            if fact is not None:
-                revisions[fact_id] = fact["revision"]
-        review["stale"] = dependencies_stale(review["fact_revisions"], revisions)
-        return review
+        return cls._annotate_evidence(review, cls._current_revisions(db, review["fact_revisions"]))
 
     def decide_review(self, review_id: str, decision: str) -> Json:
         if not isinstance(decision, str) or decision not in {"accepted", "rejected"}:
             raise CareerDataError("decision 只能是 accepted 或 rejected。")
         with self.repository.transaction() as db:
             review = self._read_review(db, review_id)
-            if decision == "accepted" and review["stale"]:
-                raise CareerDataError("报告引用的事实已更新或删除，请重新生成报告后再接受。")
+            if decision == "accepted":
+                require_current_evidence(review, "报告")
             db.set_review_status(review_id, decision)
-        return self.review(review_id)
+            review["status"] = decision
+            return review
 
     def render_review(self, review_id: str) -> str:
         with self.repository.transaction() as db:
             review = self._read_review(db, review_id)
-            if review["stale"]:
-                raise CareerDataError("报告依据已变化，请重新生成；旧报告不能继续导出。")
+            require_current_evidence(review, "报告")
             evidence = []
             for fact_id in review["fact_revisions"]:
                 fact = db.fact(fact_id)

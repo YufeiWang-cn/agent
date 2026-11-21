@@ -1,6 +1,6 @@
 """界面和模型工具共用的业务命令；不包含模型、SQL 或 Tk 对象。"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .domain import Json
 
@@ -39,8 +39,10 @@ class SaveReview:
     resume_id: str
     job_id: str | None
     title: str
-    markdown: str
-    changes: list[Json]
+    markdown: str = ""
+    changes: list[Json] = field(default_factory=list)
+    findings: list[Json] | None = None
+    general_advice: list[str] | None = None
 
 
 @dataclass(frozen=True)

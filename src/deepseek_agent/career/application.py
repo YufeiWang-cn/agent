@@ -59,6 +59,8 @@ class CareerApplication:
                 title=command.title,
                 markdown=command.markdown,
                 changes=command.changes,
+                findings=command.findings,
+                general_advice=command.general_advice,
             )
         if isinstance(command, GetReview):
             return self._use_cases.review(text(command.review_id, "review_id", 64))

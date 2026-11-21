@@ -128,7 +128,8 @@ class ApplicationContractTests(unittest.TestCase):
             resume_id=resume["id"],
             job_id=None,
             title="review",
-            markdown="draft",
+            findings=[],
+            general_advice=["draft"],
             changes=[
                 dict(
                     original="API tests",

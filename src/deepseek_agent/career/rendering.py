@@ -27,8 +27,15 @@ def render_review(review: Json, evidence: list[Json]) -> str:
         f"# {review['title']}",
         f"状态：{state}；简历来源：{review['resume_id']}",
         f"岗位来源：{review['job_id'] or '未指定'}",
-        review["markdown"],
     ]
+    if review["findings"]:
+        parts.append("## 有事实引用的分析（措辞仍需人工审阅）")
+        for finding in review["findings"]:
+            parts.append(finding["text"])
+            parts.append("事实依据：" + "、".join(finding["evidence_fact_ids"]))
+    if review["general_advice"]:
+        parts.append("## 一般建议与待补信息（非已确认的个人经历）")
+        parts.extend("- " + advice for advice in review["general_advice"])
     for index, change in enumerate(review["changes"], 1):
         parts.extend(
             [
