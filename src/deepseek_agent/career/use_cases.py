@@ -140,6 +140,18 @@ class CareerUseCases:
         validate_fact_source(source_kind, source, source_quote)
         with self.repository.transaction() as db:
             previous = db.fact_by_key(key)
+            # 重试仍须通过来源校验；只有内容与证据均未改变时才复用原版本。
+            # 比较与写入共用事务，避免重复确认制造修订并使依赖报告误失效。
+            if previous is not None and all(
+                previous[field] == value
+                for field, value in (
+                    ("category", category),
+                    ("statement", statement),
+                    ("source_id", source_id),
+                    ("source_quote", source_quote),
+                )
+            ):
+                return dict(previous)
             if previous is None and db.count("facts") >= 200:
                 raise CareerDataError("确认事实已达 200 条，请先整理或删除不再需要的事实。")
             fact = dict(
