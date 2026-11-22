@@ -1,0 +1,222 @@
+{
+  "id": "06_correct_stale",
+  "group": "challenge",
+  "description": "纠正事实后正文依赖失效，阻止接受和导出",
+  "turns": [
+    {
+      "prompt": "参与接口测试，使用 Python。",
+      "script": [
+        {
+          "tool": "import_career_document",
+          "arguments": {
+            "kind": "resume",
+            "title": "合成简历",
+            "text": "参与接口测试，使用 Python。"
+          },
+          "bind": "resume"
+        },
+        {
+          "tool": "career_memory",
+          "arguments": {
+            "action": "save",
+            "key": "项目/职责",
+            "category": "project",
+            "statement": "参与接口测试",
+            "source_id": "current_user",
+            "source_quote": "参与接口测试"
+          },
+          "bind": "fact"
+        }
+      ],
+      "answer": "已完成本轮处理。",
+      "approvals": {
+        "career_memory.save": true
+      },
+      "expected": {
+        "status": "completed",
+        "trace": [
+          [
+            "import_career_document",
+            "succeeded"
+          ],
+          [
+            "career_memory",
+            "succeeded"
+          ]
+        ],
+        "state": [
+          {
+            "collection": "facts",
+            "count": 1,
+            "match": {
+              "fact_key": "项目/职责"
+            },
+            "fields": {
+              "revision": 1,
+              "statement": "参与接口测试"
+            }
+          },
+          {
+            "collection": "documents",
+            "count": 1,
+            "match": {},
+            "fields": {}
+          }
+        ],
+        "files": {},
+        "network_requests": 0
+      }
+    },
+    {
+      "prompt": "请生成报告",
+      "script": [
+        {
+          "tool": "career_review",
+          "arguments": {
+            "action": "save",
+            "resume_id": {
+              "$ref": "resume.id"
+            },
+            "title": "合成报告",
+            "findings": [
+              {
+                "text": "参与接口测试",
+                "evidence_fact_ids": [
+                  {
+                    "$ref": "fact.id"
+                  }
+                ]
+              }
+            ],
+            "general_advice": [
+              "建议补充测试方法"
+            ],
+            "changes": []
+          },
+          "bind": "review"
+        }
+      ],
+      "answer": "已完成本轮处理。",
+      "approvals": {},
+      "expected": {
+        "status": "completed",
+        "trace": [
+          [
+            "career_review",
+            "succeeded"
+          ]
+        ],
+        "state": [
+          {
+            "collection": "facts",
+            "count": 1,
+            "match": {
+              "fact_key": "项目/职责"
+            },
+            "fields": {
+              "revision": 1,
+              "statement": "参与接口测试"
+            }
+          },
+          {
+            "collection": "reviews",
+            "count": 1,
+            "match": {
+              "title": "合成报告"
+            },
+            "fields": {
+              "status": "draft",
+              "stale": false
+            }
+          }
+        ],
+        "files": {},
+        "network_requests": 0
+      }
+    },
+    {
+      "prompt": "只协助测试",
+      "script": [
+        {
+          "tool": "career_memory",
+          "arguments": {
+            "action": "save",
+            "key": "项目/职责",
+            "category": "project",
+            "statement": "只协助测试",
+            "source_id": "current_user",
+            "source_quote": "只协助测试"
+          }
+        },
+        {
+          "tool": "career_review",
+          "arguments": {
+            "action": "decide",
+            "review_id": {
+              "$ref": "review.id"
+            },
+            "decision": "accepted"
+          }
+        },
+        {
+          "tool": "export_career_review",
+          "arguments": {
+            "review_id": {
+              "$ref": "review.id"
+            },
+            "path": "review.md"
+          }
+        }
+      ],
+      "answer": "已完成本轮处理。",
+      "approvals": {
+        "career_memory.save": true,
+        "career_review.decide": true,
+        "export_career_review": true
+      },
+      "expected": {
+        "status": "completed",
+        "trace": [
+          [
+            "career_memory",
+            "succeeded"
+          ],
+          [
+            "career_review",
+            "failed"
+          ],
+          [
+            "export_career_review",
+            "failed"
+          ]
+        ],
+        "state": [
+          {
+            "collection": "facts",
+            "count": 1,
+            "match": {},
+            "fields": {
+              "revision": 2,
+              "statement": "只协助测试"
+            }
+          },
+          {
+            "collection": "reviews",
+            "count": 1,
+            "match": {},
+            "fields": {
+              "stale": true,
+              "status": "draft"
+            }
+          }
+        ],
+        "files": {
+          "review.md": {
+            "exists": false
+          }
+        },
+        "network_requests": 0
+      }
+    }
+  ]
+}

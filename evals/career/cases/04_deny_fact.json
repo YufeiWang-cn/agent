@@ -1,0 +1,44 @@
+{
+  "id": "04_deny_fact",
+  "group": "challenge",
+  "description": "拒绝事实写入，不应产生档案事实",
+  "turns": [
+    {
+      "prompt": "参与接口测试",
+      "script": [
+        {
+          "tool": "career_memory",
+          "arguments": {
+            "action": "save",
+            "key": "项目/职责",
+            "category": "project",
+            "statement": "参与接口测试",
+            "source_id": "current_user",
+            "source_quote": "参与接口测试"
+          }
+        }
+      ],
+      "answer": "已完成本轮处理。",
+      "approvals": {},
+      "expected": {
+        "status": "completed",
+        "trace": [
+          [
+            "career_memory",
+            "rejected"
+          ]
+        ],
+        "state": [
+          {
+            "collection": "facts",
+            "count": 0,
+            "match": {},
+            "fields": {}
+          }
+        ],
+        "files": {},
+        "network_requests": 0
+      }
+    }
+  ]
+}

@@ -1,0 +1,73 @@
+{
+  "id": "14_model_failure",
+  "group": "challenge",
+  "description": "模型异常不写入数据，下一轮可以重新处理",
+  "turns": [
+    {
+      "prompt": "参与接口测试",
+      "script": [],
+      "answer": "已完成本轮处理。",
+      "approvals": {},
+      "expected": {
+        "status": "failed",
+        "trace": [],
+        "state": [
+          {
+            "collection": "facts",
+            "count": 0,
+            "match": {},
+            "fields": {}
+          }
+        ],
+        "files": {},
+        "network_requests": 0
+      },
+      "fail_model": true
+    },
+    {
+      "prompt": "参与接口测试",
+      "script": [
+        {
+          "tool": "career_memory",
+          "arguments": {
+            "action": "save",
+            "key": "项目/职责",
+            "category": "project",
+            "statement": "参与接口测试",
+            "source_id": "current_user",
+            "source_quote": "参与接口测试"
+          },
+          "bind": "fact"
+        }
+      ],
+      "answer": "已完成本轮处理。",
+      "approvals": {
+        "career_memory.save": true
+      },
+      "expected": {
+        "status": "completed",
+        "trace": [
+          [
+            "career_memory",
+            "succeeded"
+          ]
+        ],
+        "state": [
+          {
+            "collection": "facts",
+            "count": 1,
+            "match": {
+              "fact_key": "项目/职责"
+            },
+            "fields": {
+              "revision": 1,
+              "statement": "参与接口测试"
+            }
+          }
+        ],
+        "files": {},
+        "network_requests": 0
+      }
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "id": "11_fabricated_quote",
+  "group": "challenge",
+  "description": "虚构职责与数字且伪造原话时拒绝事实保存",
+  "turns": [
+    {
+      "prompt": "参与接口测试",
+      "script": [
+        {
+          "tool": "career_memory",
+          "arguments": {
+            "action": "save",
+            "key": "项目/职责",
+            "category": "project",
+            "statement": "主导团队并提升80%",
+            "source_id": "current_user",
+            "source_quote": "主导团队并提升80%"
+          }
+        }
+      ],
+      "answer": "已完成本轮处理。",
+      "approvals": {
+        "career_memory.save": true
+      },
+      "expected": {
+        "status": "completed",
+        "trace": [
+          [
+            "career_memory",
+            "failed"
+          ]
+        ],
+        "state": [
+          {
+            "collection": "facts",
+            "count": 0,
+            "match": {},
+            "fields": {}
+          }
+        ],
+        "files": {},
+        "network_requests": 0
+      }
+    }
+  ]
+}

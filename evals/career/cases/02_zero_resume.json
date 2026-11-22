@@ -1,0 +1,218 @@
+{
+  "id": "02_zero_resume",
+  "group": "normal",
+  "description": "无简历：确认素材、生成初稿、报告审阅导出",
+  "turns": [
+    {
+      "prompt": "参与接口测试",
+      "script": [
+        {
+          "tool": "career_memory",
+          "arguments": {
+            "action": "save",
+            "key": "项目/职责",
+            "category": "project",
+            "statement": "参与接口测试",
+            "source_id": "current_user",
+            "source_quote": "参与接口测试"
+          },
+          "bind": "fact"
+        },
+        {
+          "tool": "build_resume_draft",
+          "arguments": {
+            "fact_ids": [
+              {
+                "$ref": "fact.id"
+              }
+            ]
+          },
+          "bind": "draft"
+        }
+      ],
+      "answer": "已完成本轮处理。",
+      "approvals": {
+        "career_memory.save": true
+      },
+      "expected": {
+        "status": "completed",
+        "trace": [
+          [
+            "career_memory",
+            "succeeded"
+          ],
+          [
+            "build_resume_draft",
+            "succeeded"
+          ]
+        ],
+        "state": [
+          {
+            "collection": "facts",
+            "count": 1,
+            "match": {
+              "fact_key": "项目/职责"
+            },
+            "fields": {
+              "revision": 1,
+              "statement": "参与接口测试"
+            }
+          },
+          {
+            "collection": "documents",
+            "count": 1,
+            "match": {
+              "kind": "resume_draft"
+            },
+            "fields": {}
+          }
+        ],
+        "files": {},
+        "network_requests": 0
+      }
+    },
+    {
+      "prompt": "优化初稿",
+      "script": [
+        {
+          "tool": "career_review",
+          "arguments": {
+            "action": "save",
+            "resume_id": {
+              "$ref": "draft.id"
+            },
+            "title": "合成报告",
+            "findings": [
+              {
+                "text": "参与接口测试",
+                "evidence_fact_ids": [
+                  {
+                    "$ref": "fact.id"
+                  }
+                ]
+              }
+            ],
+            "general_advice": [
+              "建议补充测试方法"
+            ],
+            "changes": []
+          },
+          "bind": "review"
+        }
+      ],
+      "answer": "已完成本轮处理。",
+      "approvals": {},
+      "expected": {
+        "status": "completed",
+        "trace": [
+          [
+            "career_review",
+            "succeeded"
+          ]
+        ],
+        "state": [
+          {
+            "collection": "facts",
+            "count": 1,
+            "match": {
+              "fact_key": "项目/职责"
+            },
+            "fields": {
+              "revision": 1,
+              "statement": "参与接口测试"
+            }
+          },
+          {
+            "collection": "reviews",
+            "count": 1,
+            "match": {},
+            "fields": {
+              "stale": false
+            }
+          }
+        ],
+        "files": {},
+        "network_requests": 0
+      }
+    },
+    {
+      "prompt": "接受并导出",
+      "script": [
+        {
+          "tool": "career_review",
+          "arguments": {
+            "action": "decide",
+            "review_id": {
+              "$ref": "review.id"
+            },
+            "decision": "accepted"
+          }
+        },
+        {
+          "tool": "export_career_review",
+          "arguments": {
+            "review_id": {
+              "$ref": "review.id"
+            },
+            "path": "review.md"
+          }
+        }
+      ],
+      "answer": "已完成本轮处理。",
+      "approvals": {
+        "career_review.decide": true,
+        "export_career_review": true
+      },
+      "expected": {
+        "status": "completed",
+        "trace": [
+          [
+            "career_review",
+            "succeeded"
+          ],
+          [
+            "export_career_review",
+            "succeeded"
+          ]
+        ],
+        "state": [
+          {
+            "collection": "facts",
+            "count": 1,
+            "match": {
+              "fact_key": "项目/职责"
+            },
+            "fields": {
+              "revision": 1,
+              "statement": "参与接口测试"
+            }
+          },
+          {
+            "collection": "reviews",
+            "count": 1,
+            "match": {},
+            "fields": {
+              "status": "accepted",
+              "stale": false
+            }
+          }
+        ],
+        "files": {
+          "review.md": {
+            "exists": true,
+            "contains": [
+              "已接受",
+              "参与接口测试",
+              "事实依据"
+            ],
+            "not_contains": [
+              "提升80%",
+              "主导团队"
+            ]
+          }
+        },
+        "network_requests": 0
+      }
+    }
+  ]
+}

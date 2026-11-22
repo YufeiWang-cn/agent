@@ -147,3 +147,14 @@ result = unittest.TextTestRunner(
 gc.collect()
 raise SystemExit(not result.wasSuccessful())
 ```
+
+
+### 求职离线评测（2026-11-22）
+
+新增独立的求职多轮评测入口，不改变原有通用单轮 EvalRunner。`evaluation/career_cases.py` 严格加载案例，`career_script.py` 管理离线动作与按操作确认，`career_runner.py` 创建隔离 Agent/SQLite/假网络并收集逐轮结果，`career_graders.py` 检查业务状态、轨迹、产物和外发，`career_cli.py` 生成报告。共用现有 CheckResult/EvalResult、工作区快照与运行指标格式。
+
+14 个合成案例、30 轮交互各重复两次，28/28 通过。对两个正常闭环案例注入缺失业务快照，两个负对照均在业务状态检查中失败；工具轨迹和成功回答不变。这是评分器敏感性验证，不是模型性能对照。
+
+相关回归 82 项通过；全量 410 项，其中 409 项通过，1 项因 Docker 不可用跳过。覆盖率 80.06%；Ruff、Mypy（90 个源文件）和差异检查通过。沿用主线程回收临时测试入口，未跳过 GUI 用例。全量日志中“离线脚本 0/1”来自验证失败报告与非零退出码的负向单测，并非正式案例运行失败。
+
+正式离线报告为 `data/evals/career-offline.json`，属于被 Git 忽略的生成数据。真实 API 调用为 0。真人评分、真实模型提示词基线及成本/质量比较尚未执行；试点的调用上限、token 预算公式和人工评分量表见 [求职评测说明](../evals/career/README.md)。

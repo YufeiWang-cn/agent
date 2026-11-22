@@ -1,0 +1,75 @@
+{
+  "id": "09_network_consent",
+  "group": "normal",
+  "description": "公开查询拒绝时零请求，下一轮允许后发送一次",
+  "turns": [
+    {
+      "prompt": "暂不联网",
+      "script": [
+        {
+          "tool": "web_search",
+          "arguments": {
+            "query": "北京 Python 后端实习",
+            "scope": "domestic"
+          }
+        }
+      ],
+      "answer": "已完成本轮处理。",
+      "approvals": {},
+      "expected": {
+        "status": "completed",
+        "trace": [
+          [
+            "web_search",
+            "rejected"
+          ]
+        ],
+        "state": [
+          {
+            "collection": "facts",
+            "count": 0,
+            "match": {},
+            "fields": {}
+          }
+        ],
+        "files": {},
+        "network_requests": 0
+      }
+    },
+    {
+      "prompt": "允许此次岗位查询",
+      "script": [
+        {
+          "tool": "web_search",
+          "arguments": {
+            "query": "北京 Python 后端实习",
+            "scope": "domestic"
+          }
+        }
+      ],
+      "answer": "已完成本轮处理。",
+      "approvals": {
+        "web_search": true
+      },
+      "expected": {
+        "status": "completed",
+        "trace": [
+          [
+            "web_search",
+            "succeeded"
+          ]
+        ],
+        "state": [
+          {
+            "collection": "facts",
+            "count": 0,
+            "match": {},
+            "fields": {}
+          }
+        ],
+        "files": {},
+        "network_requests": 1
+      }
+    }
+  ]
+}
