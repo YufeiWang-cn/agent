@@ -91,9 +91,17 @@ class HalfBlockingTransport:
         self._release = threading.Event()
         self.calls: list[dict[str, object]] = []
         self._lock = threading.Lock()
+        self.worker_threads: set[threading.Thread] = set()
 
     def release(self) -> None:
         self._release.set()
+        # execute_with_context 已退出并 shutdown；测试结束前等待所有假网络线程退出。
+        with self._lock:
+            workers = tuple(self.worker_threads)
+        for worker in workers:
+            worker.join(timeout=5)
+            if worker.is_alive():
+                raise AssertionError("假网络线程未退出")
 
     def __call__(
         self,
@@ -105,6 +113,7 @@ class HalfBlockingTransport:
         request = json.loads(body.decode("utf-8"))
         with self._lock:
             self.calls.append(request)
+            self.worker_threads.add(threading.current_thread())
         query = str(request["query"])
         if query == "人工智能进展":
             self._release.wait(timeout=5)

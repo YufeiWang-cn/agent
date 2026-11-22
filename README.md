@@ -315,7 +315,7 @@ conda run -n agent python eval.py evals\cases --repeat 3 --input-price-per-milli
 ### 单元测试
 
 ```bat
-python -m unittest discover -s tests -v
+python tests/run_suite.py
 ```
 
 开发环境可以安装额外的质量检查依赖：
@@ -329,11 +329,13 @@ python -m pip install -e ".[dev]"
 ```bat
 python -m ruff check src tests
 python -m mypy
-python -m coverage run -m unittest discover -s tests -v
+python -m coverage run tests/run_suite.py
 python -m coverage report
 ```
 
 GitHub Actions 会读取 `.python-version` 中的推荐版本，并自动执行上述质量检查。
+
+本地全量回归与 CI 统一使用 `tests/run_suite.py`：测试期间关闭自动循环垃圾回收，每项用例结束后在主线程主动收集，避免前序 Tk 用例遗留的引用环被后续工作线程回收。运行结束恢复原有 GC 设置；不跳过 GUI 用例、不改变覆盖率门槛。这是测试进程的回收策略，不代表产品运行时的 Tk 生命周期已完成治理。可用 `python tests/run_suite.py --pattern test_web_search.py` 运行单个测试文件。
 
 ## 学生求职模式
 

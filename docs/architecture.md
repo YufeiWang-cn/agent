@@ -128,25 +128,7 @@ git diff --check
 - 使用临时测试入口关闭自动循环垃圾回收，并在每项测试结束后于主线程主动收集，仍发现并执行全部 404 项测试：403 项通过，1 项因 Docker 服务不可用跳过。分支覆盖开启的总覆盖率为 79.71%。没有跳过 GUI 测试或修改测试断言；此测试入口规避回收时机问题，并不表示已修复产品中的 Tk 对象生命周期。
 - 没有调用真实搜索服务或付费模型，没有发送真实个人材料。本次不包括全局历史日志脱敏或模型请求的隐私治理。
 
-必要时可将下列内容保存为临时脚本，从仓库根目录以 `python -m coverage run <脚本路径>` 复现主线程回收的测试入口：
-
-```python
-import gc
-import unittest
-
-class MainThreadCollectionResult(unittest.TextTestResult):
-    def stopTest(self, test):
-        super().stopTest(test)
-        gc.collect()
-
-gc.disable()
-suite = unittest.defaultTestLoader.discover("tests")
-result = unittest.TextTestRunner(
-    verbosity=2, resultclass=MainThreadCollectionResult
-).run(suite)
-gc.collect()
-raise SystemExit(not result.wasSuccessful())
-```
+上述临时入口已由仓库内的 `tests/run_suite.py` 取代，本地与 CI 使用方式见 README。历史验证结果保留如下。
 
 
 ### 求职离线评测（2026-11-22）
@@ -158,3 +140,16 @@ raise SystemExit(not result.wasSuccessful())
 相关回归 82 项通过；全量 410 项，其中 409 项通过，1 项因 Docker 不可用跳过。覆盖率 80.06%；Ruff、Mypy（90 个源文件）和差异检查通过。沿用主线程回收临时测试入口，未跳过 GUI 用例。全量日志中“离线脚本 0/1”来自验证失败报告与非零退出码的负向单测，并非正式案例运行失败。
 
 正式离线报告为 `data/evals/career-offline.json`，属于被 Git 忽略的生成数据。真实 API 调用为 0。真人评分、真实模型提示词基线及成本/质量比较尚未执行；试点的调用上限、token 预算公式和人工评分量表见 [求职评测说明](../evals/career/README.md)。
+
+
+### Windows CI 的 Tk 回收修复（2026-11-22）
+
+GitHub Actions 的 `aeb1bd0`、`ba1acf3` 两次运行中，Ruff、Mypy 均通过，测试进程发生 `Tcl_AsyncDelete: async handler deleted by the wrong thread`；前一次甚至已输出 unittest 成功结果，进程仍异常退出。此前本地全量验证使用临时主线程回收入口，但 CI 仍直接调用 unittest discovery，二者实际命令不一致。
+
+- 新增正式入口 `tests/run_suite.py` 并接入 CI 和 README。仅在测试期间关闭自动循环 GC，每项用例结束及运行结束时由主线程主动收集，随后恢复原有开关。后台启动测试入口会被拒绝，空测试集和失败测试均返回非零退出码。
+- 搜索取消测试的 `HalfBlockingTransport.release()` 在放行后等待已记录的工作线程退出；不改变业务代码中立即响应取消的行为。
+- 新增独立进程 Tk 引用环回归：销毁窗口后检查对象已在主线程回收，再让后台线程分配循环对象；另测失败退出、空发现和 GC 状态恢复。不跳过 GUI 测试，不降低覆盖率门槛。
+
+此修改限定于测试生命周期；没有改变产品全局 GC，也不能据此宣称所有产品 Tk 对象的跨线程销毁风险已经解决。真实搜索与模型 API 不参与验证。
+
+验证结果：新增入口回归 4 项及搜索回归 31 项通过；使用与 CI 相同的 `python -m coverage run tests/run_suite.py` 完成全量复核，414 项中 413 项通过、1 项因 Docker 服务未启动跳过，最终进程退出码为 0，覆盖率 80.06%。首次完整运行也已确认退出码为 0；中间一次日志显示通过但会话中断后退出码无法取回，因此补跑最终验证并保存退出码。三次日志均未出现上述 Tcl 错误。Ruff、Mypy（90 个源文件）、`git diff --check` 通过；另检查 GC 原开关为开启或关闭时均能恢复。尚未提交或推送，远端 Actions 结果需在后续推送后验证。
