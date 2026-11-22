@@ -8,6 +8,7 @@ from time import monotonic
 from typing import Any
 
 from ..agent import Agent
+from ..reliability import ModelBudget
 from ..config import Settings
 from ..memory import JsonSessionStore, JsonProjectStore
 from ..runtime import AgentEventType, TurnOutcome
@@ -41,6 +42,9 @@ class OfflineTransport:
 
 
 class CareerEvalRunner:
+    def __init__(self, model_budget: ModelBudget | None = None) -> None:
+        self._model_budget = model_budget
+
     def run_case(
         self, case: CareerCase, *, attempt: int = 1, omit_state_control: bool = False
     ) -> EvalResult:
@@ -74,6 +78,7 @@ class CareerEvalRunner:
                     max_retries=0,
                 ),
                 model=model,
+                model_budget=self._model_budget,
                 tools=tools,
                 confirmer=confirmer,
                 session_store=JsonSessionStore(state / "sessions"),
@@ -153,6 +158,7 @@ class CareerEvalRunner:
                 steps_completed=total_steps,
                 turns=len(case.turns),
                 real_api_calls=0,
+                model_budget=agent.model_budget_snapshot,
                 network_requests=len(transport.requests),
                 observations=observations,
                 evidence_mode="offline-script",

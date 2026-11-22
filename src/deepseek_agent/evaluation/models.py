@@ -23,6 +23,7 @@ VALID_EXPECTED_STATUSES = frozenset(
         "cancelled",
         "failed",
         "step_limit_reached",
+        "budget_exhausted",
     }
 )
 

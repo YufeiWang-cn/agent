@@ -557,6 +557,7 @@ class AgentApp:
             "confirmation": self._handle_confirmation_event,
             "done": self._handle_done_event,
             "step_limit_reached": self._handle_step_limit_event,
+            "budget_exhausted": self._handle_budget_event,
             "waiting_user": self._handle_waiting_user_event,
             "cancelled": self._handle_cancelled_event,
             "error": self._handle_error_event,
@@ -617,6 +618,10 @@ class AgentApp:
         self._commit_finished_turn("就绪")
         if restore_turn is not None:
             self._schedule_turn_restore(restore_turn)
+
+    def _handle_budget_event(self, payload: Any) -> None:
+        self._commit_finished_turn("未完成")
+        self._status.set(payload.final_text)
 
     def _handle_step_limit_event(self, payload: Any) -> None:
         outcome: TurnOutcome = payload

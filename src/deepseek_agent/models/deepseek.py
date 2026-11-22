@@ -61,6 +61,7 @@ class DeepSeekModel:
 
     def __init__(self, settings: Settings) -> None:
         self._model_name = settings.model
+        self._max_output_tokens = settings.max_output_tokens
         self._client = OpenAI(
             api_key=settings.api_key,
             base_url=settings.base_url,
@@ -94,6 +95,7 @@ class DeepSeekModel:
             "model": self._model_name,
             "messages": list(messages),
             "stream": True,
+            "max_tokens": self._max_output_tokens,
             # OpenAI 兼容端点默认不在流式分片中返回用量，
             # 不带这个开关 UsageUpdate 永远不会触发，token 统计只能靠估算。
             "stream_options": {"include_usage": True},

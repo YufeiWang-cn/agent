@@ -12,6 +12,8 @@ class RuntimeMetrics:
     successful_requests: int = 0
     failed_requests: int = 0
     retries: int = 0
+    budget_rejections: int = 0
+    usage_unknown_attempts: int = 0
     total_duration_seconds: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0
@@ -55,6 +57,8 @@ class RuntimeMetrics:
 
     @property
     def token_source(self) -> str:
+        if self.usage_unknown_attempts:
+            return "mixed" if self.usage_api_reports else "unknown"
         if self.usage_api_reports and self.usage_estimated_reports:
             return "mixed"
         if self.usage_api_reports:

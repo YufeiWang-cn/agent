@@ -19,6 +19,7 @@ from ..models.base import (
     UsageUpdate,
 )
 from ..observability import RuntimeMetrics
+from .budget import ModelBudget, ModelBudgetExceeded
 from .errors import (
     ModelCallError,
     ModelCancelledError,
@@ -70,6 +71,9 @@ class RetryingChatModel:
         logger: logging.Logger | None = None,
         sleeper: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.perf_counter,
+        *,
+        max_calls_per_turn: int = 20,
+        budget: ModelBudget | None = None,
     ) -> None:
         self._model = model
         self._policy = policy
@@ -80,6 +84,18 @@ class RetryingChatModel:
         self._logger = logger
         self._sleeper = sleeper
         self._clock = clock
+        self._max_calls_per_turn = max_calls_per_turn
+        self._budget = budget
+        self.begin_turn()
+
+    def begin_turn(self) -> None:
+        self._turn_budget = ModelBudget(self._max_calls_per_turn, scope="turn")
+
+    def budget_snapshot(self) -> dict[str, object]:
+        return dict(
+            turn=self._turn_budget.snapshot(),
+            batch=self._budget.snapshot() if self._budget is not None else None,
+        )
 
     @property
     def model_name(self) -> str:
@@ -119,11 +135,24 @@ class RetryingChatModel:
             estimated_input_tokens += estimate_text_tokens(serialized_tools)
 
         for attempt_index in range(self._policy.max_retries + 1):
+            if should_cancel is not None and should_cancel():
+                raise ModelCancelledError("模型调用前收到停止请求。")
+            try:
+                budgets = (
+                    (self._turn_budget,) if self._budget is None
+                    else (self._turn_budget, self._budget)
+                )
+                ModelBudget.consume(*budgets)
+            except ModelBudgetExceeded:
+                self._metrics.budget_rejections += 1
+                self._metrics.record_failure(self._clock() - started_at)
+                raise
             self._metrics.record_attempt()
             # 流式输出开始后不再重试，避免向用户重复发送部分内容。
             emitted_event = False
             exact_usage: UsageUpdate | None = None
             estimated_output_parts: list[str] = []
+            completed_attempt = False
             try:
                 for event in self._model.stream(messages, tools):
                     if isinstance(event, UsageUpdate):
@@ -132,6 +161,9 @@ class RetryingChatModel:
                     emitted_event = True
                     estimated_output_parts.append(self._event_token_text(event))
                     yield event
+                completed_attempt = True
+            except ModelBudgetExceeded:
+                raise
             except Exception as error:
                 category, retryable, message = classify_model_error(error)
                 retries_exhausted = attempt_index >= self._policy.max_retries
@@ -194,19 +226,21 @@ class RetryingChatModel:
                     partial=False,
                 ) from error
 
+            finally:
+                # 包括失败/重试/流被关闭的尝试；无 usage 的失败不能伪装成零用量。
+                if exact_usage is not None:
+                    self._metrics.record_token_usage(
+                        exact_usage.input_tokens, exact_usage.output_tokens, exact=True,
+                    )
+                else:
+                    self._metrics.record_token_usage(
+                        estimated_input_tokens,
+                        estimate_text_tokens("\n".join(estimated_output_parts)), exact=False,
+                    )
+                    if not completed_attempt:
+                        self._metrics.usage_unknown_attempts += 1
+
             duration = self._clock() - started_at
-            if exact_usage is not None:
-                self._metrics.record_token_usage(
-                    exact_usage.input_tokens,
-                    exact_usage.output_tokens,
-                    exact=True,
-                )
-            else:
-                self._metrics.record_token_usage(
-                    estimated_input_tokens,
-                    estimate_text_tokens("\n".join(estimated_output_parts)),
-                    exact=False,
-                )
             self._metrics.record_success(duration)
             self._logger.info(
                 "model_request_succeeded model=%s attempts=%d duration=%.3f",

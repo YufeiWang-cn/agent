@@ -46,7 +46,9 @@ class AgentChatRunner:
             )
             self._put("error", (str(error), history_preserved))
         else:
-            if outcome.status is RunStatus.STEP_LIMIT_REACHED:
+            if outcome.status is RunStatus.BUDGET_EXHAUSTED:
+                self._put("budget_exhausted", outcome)
+            elif outcome.status is RunStatus.STEP_LIMIT_REACHED:
                 self._put("step_limit_reached", outcome)
             elif outcome.status is RunStatus.WAITING_USER:
                 self._put("waiting_user", outcome)

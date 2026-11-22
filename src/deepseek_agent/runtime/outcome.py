@@ -17,6 +17,7 @@ class RunStatus(str, Enum):
     CANCELLED = "cancelled"
     FAILED = "failed"
     STEP_LIMIT_REACHED = "step_limit_reached"
+    BUDGET_EXHAUSTED = "budget_exhausted"
 
     @property
     def succeeded(self) -> bool:
@@ -37,6 +38,7 @@ class RunStatus(str, Enum):
             RunStatus.CANCELLED,
             RunStatus.FAILED,
             RunStatus.STEP_LIMIT_REACHED,
+            RunStatus.BUDGET_EXHAUSTED,
         }
 
 

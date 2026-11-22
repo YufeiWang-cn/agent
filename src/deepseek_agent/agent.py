@@ -14,7 +14,7 @@ from .memory import JsonProjectStore, JsonSessionStore
 from .models import ChatModel
 from .observability import RuntimeMetrics
 from .permissions import ToolConfirmer
-from .reliability import RetryPolicy
+from .reliability import ModelBudget, RetryPolicy
 from .runtime.engine import AgentCancelledError, AgentRuntime
 from .timekeeping import now_china
 from .tools import ToolRegistry
@@ -38,6 +38,7 @@ class Agent(AgentRuntime):
         metrics: RuntimeMetrics | None = None,
         logger: logging.Logger | None = None,
         run_journal: RunJournal | None = None,
+        model_budget: ModelBudget | None = None,
     ) -> None:
         super().__init__(
             assemble_runtime(
@@ -54,6 +55,7 @@ class Agent(AgentRuntime):
                 metrics=metrics,
                 logger=logger,
                 run_journal=run_journal,
+                model_budget=model_budget,
             )
         )
 

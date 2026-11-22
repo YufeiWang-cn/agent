@@ -222,6 +222,9 @@ class Settings:
     agent_mode: str = "general"
     career_profile_id: str = "default"
 
+    max_model_calls_per_turn: int = 20
+    max_output_tokens: int = 4096
+
     # frozen dataclass 自动生成的 repr 会把密钥原样打进日志和异常上下文，
     # 这里改为只显示密钥是否已配置及其长度。
     def __repr__(self) -> str:
@@ -236,6 +239,12 @@ class Settings:
         return f"{type(self).__name__}({', '.join(fields)})"
 
     def __post_init__(self) -> None:
+        for name, value in (
+            ("AGENT_MAX_MODEL_CALLS_PER_TURN", self.max_model_calls_per_turn),
+            ("DEEPSEEK_MAX_OUTPUT_TOKENS", self.max_output_tokens),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} 必须是正整数。")
         if self.agent_mode not in {"general", "career"}:
             raise ValueError("AGENT_MODE 只能是 general 或 career。")
         if not PROFILE_ID_PATTERN.fullmatch(self.career_profile_id):
@@ -473,6 +482,14 @@ class Settings:
             model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro").strip(),
             system_prompt=DEFAULT_PROMPT_PATH.read_text(encoding="utf-8").strip(),
             max_context_tokens=max_context_tokens,
+            max_model_calls_per_turn=_read_int_env(
+                "AGENT_MAX_MODEL_CALLS_PER_TURN", 20, minimum=1,
+                error_message="AGENT_MAX_MODEL_CALLS_PER_TURN 必须为正整数。",
+            ),
+            max_output_tokens=_read_int_env(
+                "DEEPSEEK_MAX_OUTPUT_TOKENS", 4096, minimum=1,
+                error_message="DEEPSEEK_MAX_OUTPUT_TOKENS 必须为正整数。",
+            ),
             request_timeout=request_timeout,
             max_retries=max_retries,
             retry_base_delay=retry_base_delay,

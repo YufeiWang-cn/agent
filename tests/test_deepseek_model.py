@@ -66,6 +66,7 @@ class DeepSeekModelTests(unittest.TestCase):
         completions = FakeCompletions(chunks)
         model = object.__new__(DeepSeekModel)
         model._model_name = "test-model"
+        model._max_output_tokens = 4096
         model._client = SimpleNamespace(
             chat=SimpleNamespace(completions=completions)
         )
@@ -90,6 +91,7 @@ class DeepSeekModelTests(unittest.TestCase):
                     "model": "test-model",
                     "messages": messages,
                     "stream": True,
+                    "max_tokens": 4096,
                     "stream_options": {"include_usage": True},
                 }
             ],

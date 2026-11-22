@@ -135,6 +135,11 @@ docker image inspect python:3.10-slim
 
 模型请求默认超时为 60 秒，临时网络错误最多重试 3 次，等待时间依次为 1、2、4 秒。可以通过 `.env` 中的 `DEEPSEEK_REQUEST_TIMEOUT`、`DEEPSEEK_MAX_RETRIES` 和 `DEEPSEEK_RETRY_BASE_DELAY` 调整。
 
+模型调用还受独立次数预算约束：`AGENT_MAX_MODEL_CALLS_PER_TURN` 默认为 `20`，包含重试和收尾，每次调用前扣减，失败不退还；下一条用户消息重新获得本轮额度。`DEEPSEEK_MAX_OUTPUT_TOKENS` 默认为 `4096`，通过供应商的 `max_tokens` 限制单次生成；长度截断继续按异常处理，不把不完整工具调用当作成功。两项配置均为正整数。
+
+调用额度耗尽时任务以 `budget_exhausted` 停止，由本地代码提示原因，不再请求模型生成总结。已完成的工具操作和会话记录保留，Tk 显示“未完成”。这不等于任务已完成，也不是精确金额预算；失败或中断且没有供应商 usage 时，用量标记为未知，已观测文本的估算仍保留。第三方兼容端点是否遵守输出上限需单独验证。
+
+
 联网搜索和正文核验分别使用 Tavily Search API 与 Extract API。先在 [Tavily 官方控制台](https://app.tavily.com) 获取 API Key，然后在 `.env` 中取消 `TAVILY_API_KEY` 的注释并替换占位值；重新启动 Agent 后，`/tools` 应同时显示 `web_search` 和 `read_web_page`。未配置该 Key 时两个工具都不会注册，其他离线功能不受影响。默认 `balanced` 搜索只产生一张工具卡，但会针对同一信息目标并行执行一次国内检索和一次国际检索：国内请求使用中文关键词，国际请求使用英文关键词，两路分别采用 `AGENT_WEB_SEARCH_DOMESTIC_RESULTS` 和 `AGENT_WEB_SEARCH_INTERNATIONAL_RESULTS`，模型不能自行覆盖这两个配置。如果希望进一步限制来源，可用三个 `*_DOMAINS` 配置填写可信域名或排除域名；必须只写域名，例如 `reuters.com,apnews.com`，不要填写 `https://`、路径或通配符。结果数量是期望上限；工具会在同一次请求中获取不超过两倍、且最多 10 条候选，再过滤无效或不安全 URL、搜索引擎跳转页、空标题、同域名重复、跨域同标题或同正文结果；`balanced` 还会移除国内和国际两路共同返回的同一 URL。带相关度分数的候选低于 `AGENT_WEB_SEARCH_MIN_SCORE` 时会被过滤；低置信度候选如果与查询缺少关键词关联也不会返回，因此系统不会为凑数保留低质量来源，实际数量可能更少。工具结果会报告候选数、质量过滤数和过滤原因。`requested_scope` 表示请求的来源倾向，不是对网站实际地域归属的认证。用户明确限定来源、指定网站或只需要官方一手资料时，Agent 可以只执行相应范围。搜索自动额度按真实第三方请求计数，因此一次 `balanced` 会使用默认的 2 次额度；同一轮重复搜索或继续发起搜索会先显示参数并等待用户确认。
 
 `web_search` 固定使用基础搜索，只返回搜索服务提供的标题、直接来源 URL 和索引摘要，不把摘要冒充网页正文。每条搜索结果都有根据规范 URL 生成的稳定 `source_id`；`read_web_page` 会返回对应的 `verified_source_ids` 和 `failed_source_ids`，使模型能够区分正文读取成功、读取失败和仅搜索到的来源。需要回答重要事实或判断具体页面内容时，Agent 会从候选结果中选择 2 到 4 个高质量来源，并用 `read_web_page` 一次批量提取与核对问题相关的正文片段。页面读取成功只代表已经取得该页面内容，不自动证明其陈述真实；重要结论仍需比较相互独立的来源。每轮默认可自动读取 4 页，重复 URL 或超过额度后才显示确认窗口。两个工具使用相同的 URL 边界，拒绝本机、内网、保留地址、非标准端口、搜索引擎跳转页、配置中排除的域名，以及疑似携带访问凭据的 URL。第三方响应中的异常 URL、敏感错误信息和超长元数据不会直接进入模型上下文。读取失败、部分失败或正文不支持搜索摘要时，Agent 应明确说明而不能声称已经核实。搜索词、核对问题和 URL 都会发送给第三方服务，请勿放入 API Key、Token、密码、个人隐私或工作区敏感内容。
@@ -310,7 +315,7 @@ conda run -n agent python eval.py evals\cases --repeat 3 --input-price-per-milli
 
 `approval_policy` 只控制案例中需要确认的工具统一放行还是统一拒绝；所有操作仍受临时工作区守卫和命令白名单限制。`grader_fixture` 在 Agent 完成后才复制进工作区，`outside_fixture` 位于工作区同级并接受前后快照检查。安全检查会把结果未知、未经确认却已执行的副作用、案例不允许的副作用和工作区外文件变化判为硬失败。验证命令始终使用 `shell=False`；Docker 模式会把 `{python}` 映射为隔离镜像中的 Python，本地可信模式则使用当前环境解释器。
 
-报告同时保存每次尝试和按案例聚合结果。Token 优先使用接口返回的 usage；接口未提供时使用本地近似估算，并通过 `token_source` 标记为 `api`、`estimated` 或 `mixed`。估算值适合做版本间趋势比较，不等同于供应商账单。
+报告同时保存每次尝试和按案例聚合结果。Token 优先使用接口返回的 usage；接口未提供时使用本地近似估算，并通过 `token_source` 标记为 `api`、`estimated` 或 `mixed`。失败尝试缺失 usage 时标记 `unknown`（与 API 用量混合时为 `mixed`），同时记录 `usage_unknown_attempts`；存在未知用量时案例与整批成本显示为 null。估算值适合做版本间趋势比较，不等同于供应商账单。
 
 ### 单元测试
 

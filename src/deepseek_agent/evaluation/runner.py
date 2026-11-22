@@ -257,6 +257,8 @@ class EvalRunner:
                 3,
             ),
             "model_requests": runtime.model_requests if runtime is not None else 0,
+            "budget_rejections": runtime.budget_rejections if runtime is not None else 0,
+            "usage_unknown_attempts": runtime.usage_unknown_attempts if runtime is not None else 0,
             "api_attempts": runtime.api_attempts if runtime is not None else 0,
             "retries": runtime.retries if runtime is not None else 0,
             "input_tokens": runtime.input_tokens if runtime is not None else 0,

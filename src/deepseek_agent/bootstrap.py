@@ -16,7 +16,7 @@ from .memory import JsonProjectStore, JsonSessionStore, SessionCoordinator
 from .models import ChatModel, DeepSeekModel
 from .observability import RuntimeMetrics
 from .permissions import ConsoleToolConfirmer, ToolConfirmer
-from .reliability import RetryingChatModel, RetryPolicy
+from .reliability import ModelBudget, RetryingChatModel, RetryPolicy
 from .runtime.dependencies import RuntimeDependencies
 from .tools import ToolRegistry, build_default_registry
 from .tools.update_plan import PlanUpdater
@@ -37,6 +37,7 @@ def assemble_runtime(
     metrics: RuntimeMetrics | None = None,
     logger: logging.Logger | None = None,
     run_journal: RunJournal | None = None,
+    model_budget: ModelBudget | None = None,
 ) -> RuntimeDependencies:
     effective_logger = logger or logging.getLogger(__name__)
     effective_metrics = metrics or RuntimeMetrics()
@@ -45,6 +46,8 @@ def assemble_runtime(
         retry_policy or RetryPolicy(settings.max_retries, settings.retry_base_delay),
         effective_metrics,
         logger=logger,
+        max_calls_per_turn=settings.max_model_calls_per_turn,
+        budget=model_budget,
     )
     career_enabled = settings.agent_mode == "career"
     career_root = (

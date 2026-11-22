@@ -319,6 +319,7 @@ class RuntimeRegressionTests(unittest.TestCase):
             return iter(next(chunks))
 
         model = object.__new__(DeepSeekModel)
+        model._max_output_tokens = 4096
         model._model_name = "deepseek-v4-flash"
         model._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
         return model, requests

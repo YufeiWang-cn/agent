@@ -29,7 +29,7 @@ from ..planning import (
     PlanKind,
     TaskPlan,
 )
-from ..reliability import ModelCancelledError
+from ..reliability import ModelCancelledError, ModelBudgetExceeded
 from ..runtime import AgentEvent, RunStatus, TurnOutcome, TurnRuntimeState
 from ..tools import ToolEffect
 from ..timekeeping import CHINA_TIMEZONE_NAME
@@ -144,6 +144,20 @@ class AgentRuntime:
         )
         try:
             return self._run_turn_loop(progress, callbacks)
+        except ModelBudgetExceeded as error:
+            message = str(error)
+            self._conversation.add_assistant(message)
+            try:
+                self._save_completed_turn(progress.checkpoint)
+            except Exception as save_error:
+                self._handle_failed_turn(save_error, progress)
+                raise
+            self._emit_text(message, callbacks)
+            return self._finish_turn_outcome(
+                status=RunStatus.BUDGET_EXHAUSTED, final_text=message,
+                steps_completed=progress.steps_completed, checkpoint=progress.checkpoint,
+                history_preserved=True, error_message=error.scope,
+            )
         except AgentCancelledError as error:
             self._handle_cancelled_turn(error, progress)
             raise
@@ -155,6 +169,10 @@ class AgentRuntime:
             self._handle_failed_turn(error, progress)
             raise
 
+    @property
+    def model_budget_snapshot(self) -> dict[str, object]:
+        return self._model.budget_snapshot()
+
     def _start_turn(self, prompt: str) -> TurnProgress:
         """建立回滚检查点，并初始化本轮运行状态。"""
         progress = TurnProgress(
@@ -162,6 +180,7 @@ class AgentRuntime:
             plan_checkpoint=self._current_plan,
         )
         self._begin_turn()
+        self._model.begin_turn()
         turn_id = uuid4().hex
         self._turn_state.begin(turn_id)
         self._event_sequence = 0

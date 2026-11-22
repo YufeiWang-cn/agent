@@ -6,9 +6,10 @@ from collections import Counter
 from pathlib import Path
 
 from ..config import PROJECT_ROOT
+from ..reliability import ModelBudget
 from .career_cases import load_career_cases
 from .career_runner import CareerEvalRunner
-from .models import EvalCaseError
+from .models import EvalCaseError, EvalResult
 
 
 def run(argv: list[str] | None = None) -> int:
@@ -23,14 +24,18 @@ def run(argv: list[str] | None = None) -> int:
         action="store_true",
         help="对正常闭环案例附加缺失业务快照的评分器负对照。",
     )
+    parser.add_argument("--max-model-calls", type=int, help="整批脚本模型调用上限，包含重复与负对照")
     options = parser.parse_args(argv)
+    if options.max_model_calls is not None and options.max_model_calls < 1:
+        parser.error("max-model-calls 必须为正整数。")
     if not 1 <= options.repeat <= 10:
         parser.error("repeat 必须在 1–10 之间。")
     try:
         cases = load_career_cases(options.cases)
     except (EvalCaseError, TypeError) as error:
         parser.error(str(error))
-    runner = CareerEvalRunner()
+    budget = ModelBudget(options.max_model_calls) if options.max_model_calls is not None else None
+    runner = CareerEvalRunner(model_budget=budget)
     results = [
         runner.run_case(case, attempt=attempt)
         for case in cases
@@ -41,6 +46,10 @@ def run(argv: list[str] | None = None) -> int:
         for case in cases
         if options.compare_controls and case.id in {"01_resume_jd", "02_zero_resume"}
     ]
+    # 预算截停不能冒充评分器识别了缺失快照的负对照。
+    def control_detected(result: EvalResult) -> bool:
+        return not result.passed and not result.metrics.get("budget_rejections", 0)
+
     failures = Counter(
         check.name.split(".")[-1]
         for result in results
@@ -50,6 +59,7 @@ def run(argv: list[str] | None = None) -> int:
     passed = sum(result.passed for result in results)
     payload = dict(
         evidence_mode="offline-script",
+        model_budget=budget.snapshot() if budget is not None else None,
         real_api_calls=0,
         scope="验证工具链与评分器，不衡量模型推理、措辞忠实度或提示注入识别能力。",
         cases=len(cases),
@@ -59,7 +69,7 @@ def run(argv: list[str] | None = None) -> int:
         failure_categories=dict(failures),
         results=[result.to_dict() for result in results],
         negative_controls=[result.to_dict() for result in controls],
-        controls_detected=sum(not result.passed for result in controls),
+        controls_detected=sum(control_detected(result) for result in controls),
         human_review=dict(status="not_run", rubric="evals/career/README.md"),
     )
     options.output.parent.mkdir(parents=True, exist_ok=True)
@@ -68,7 +78,7 @@ def run(argv: list[str] | None = None) -> int:
         f"离线脚本：{passed}/{len(results)} 通过；负对照检出 {payload['controls_detected']}/{len(controls)}；真实 API 调用 0。"
     )
     print(f"报告：{options.output}")
-    return 0 if passed == len(results) and all(not result.passed for result in controls) else 1
+    return 0 if passed == len(results) and all(control_detected(result) for result in controls) else 1
 
 
 if __name__ == "__main__":

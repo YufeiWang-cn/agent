@@ -124,7 +124,8 @@ def _report_payload(
     )
     total_estimated_cost = (
         None
-        if input_price_per_million is None or output_price_per_million is None
+        if (input_price_per_million is None or output_price_per_million is None
+            or any(item["estimated_cost"] is None for item in case_aggregates))
         else round(
             sum(cast(float, item["estimated_cost"]) for item in case_aggregates),
             8,
@@ -153,7 +154,8 @@ def _report_payload(
         },
         "pricing": (
             None
-            if input_price_per_million is None or output_price_per_million is None
+            if (input_price_per_million is None or output_price_per_million is None
+            or any(item["estimated_cost"] is None for item in case_aggregates))
             else {
                 "input_price_per_million": input_price_per_million,
                 "output_price_per_million": output_price_per_million,
@@ -209,6 +211,7 @@ def _case_aggregates(
         if (
             input_price_per_million is not None
             and output_price_per_million is not None
+            and not any(_metric_number(item, "usage_unknown_attempts") for item in attempts)
         ):
             estimated_cost = round(
                 input_tokens / 1_000_000 * input_price_per_million

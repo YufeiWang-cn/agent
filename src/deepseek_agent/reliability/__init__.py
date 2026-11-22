@@ -6,9 +6,12 @@ from .errors import (
     RetryableModelError,
     retry_after_seconds,
 )
+from .budget import ModelBudget, ModelBudgetExceeded
 from .retry import RetryPolicy, RetryingChatModel
 
 __all__ = [
+    "ModelBudget",
+    "ModelBudgetExceeded",
     "ModelCallError",
     "ModelCancelledError",
     "RetryableModelError",
