@@ -16,7 +16,10 @@ from ..context.estimator import estimate_messages_tokens, estimate_text_tokens
 from ..conversation import Message
 from ..models import ChatModel, DeepSeekModel, StreamEvent
 from ..reliability import ModelBudget, ModelCallError
+from .career_cases import CareerCase
 from .career_model_cases import DEFAULT_MANIFEST, load_model_cases
+from .career_baseline import CareerBaselineRunner
+from .career_comparison import comparison_summary
 from .career_runner import CareerEvalRunner
 from .models import CheckResult, EvalCaseError, EvalResult
 
@@ -78,6 +81,9 @@ def _checkpoint(path: Path, report: dict[str, Any]) -> None:
 def run(argv: list[str] | None = None, *, model_factory: ModelFactory | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    parser.add_argument(
+        "--compare", action="store_true", help="完整 Agent 与无工具直接提示词基线共用总预算"
+    )
     parser.add_argument("--execute", action="store_true", help="显式发起模型调用；默认仅预览")
     parser.add_argument("--model", default="deepseek-v4-pro")
     parser.add_argument("--base-url", default="https://api.deepseek.com")
@@ -119,12 +125,20 @@ def run(argv: list[str] | None = None, *, model_factory: ModelFactory | None = N
         cases = load_model_cases(options.manifest)
     except EvalCaseError as error:
         parser.error(str(error))
-    turns = sum(len(case.turns) for case in cases) * options.repeat
-    ceiling = min(options.max_model_calls, turns * options.max_calls_per_turn)
+    original_turns = sum(len(case.turns) for case in cases) * options.repeat
+    arms = ["agent", "baseline"] if options.compare else ["agent"]
+    turns = original_turns * len(arms)
+    ceiling = min(
+        options.max_model_calls,
+        original_turns * (options.max_calls_per_turn + int(options.compare)),
+    )
     plan: dict[str, Any] = dict(
         mode="preview",
         cases=len(cases),
-        attempts=len(cases) * options.repeat,
+        attempts=len(cases) * options.repeat * len(arms),
+        repeat=options.repeat,
+        arms=arms,
+        baseline_calls_per_turn=1 if options.compare else None,
         user_turns=turns,
         model=options.model,
         base_url=options.base_url,
@@ -150,7 +164,11 @@ def run(argv: list[str] | None = None, *, model_factory: ModelFactory | None = N
             )
             for c in cases
         ],
-        scope="仅完整 Agent 流程；提示词基线及人工语义评分尚未实施。",
+        scope=(
+            "同模型和用户材料的系统整体对照；人工评分前不报告质量提升。"
+            if options.compare
+            else "仅完整 Agent 流程；未执行提示词基线或人工语义评分。"
+        ),
     )
     if not options.execute:
         print(json.dumps(plan, ensure_ascii=False, indent=2))
@@ -179,7 +197,13 @@ def run(argv: list[str] | None = None, *, model_factory: ModelFactory | None = N
     )
     budget = ModelBudget(options.max_model_calls)
     runner = CareerEvalRunner(model_budget=budget)
-    scheduled = [(case, attempt) for case in cases for attempt in range(1, options.repeat + 1)]
+    baseline_runner = CareerBaselineRunner(budget)
+    scheduled: list[tuple[CareerCase, int, str]] = []
+    for case in cases:
+        for attempt in range(1, options.repeat + 1):
+            # 成对交错，轮换先运行的组；额度截停不能把未执行组当成零分。
+            order = arms if (len(scheduled) // len(arms)) % 2 == 0 else list(reversed(arms))
+            scheduled.extend((case, attempt, arm) for arm in order)
     results: list[dict[str, Any]] = []
     active_models: list[CheckedModel] = []
     report: dict[str, Any] = dict(
@@ -191,6 +215,7 @@ def run(argv: list[str] | None = None, *, model_factory: ModelFactory | None = N
         not_run=[],
         human_review=dict(status="not_run"),
         baseline=dict(status="not_run"),
+        blinding_seed=uuid4().hex if options.compare else None,
         business_checks_are_not_semantic_quality=True,
     )
 
@@ -210,10 +235,22 @@ def run(argv: list[str] | None = None, *, model_factory: ModelFactory | None = N
                 )
             ),
         )
+        if options.compare:
+            report["comparison"] = comparison_summary(report)
+            baseline_count = sum(r["metrics"].get("arm") == "baseline" for r in results)
+            report["baseline"] = dict(
+                status=(
+                    "complete"
+                    if baseline_count == len(cases) * options.repeat
+                    else "partial"
+                    if baseline_count
+                    else "not_run"
+                )
+            )
         _checkpoint(options.output, report)
 
     def progress(value: dict[str, Any]) -> None:
-        report["in_progress"] = value
+        report["in_progress"] = dict(value, arm=current_arm)
         save()
 
     options.output.parent.mkdir(parents=True, exist_ok=True)
@@ -222,21 +259,29 @@ def run(argv: list[str] | None = None, *, model_factory: ModelFactory | None = N
         stream.write("{}")
     save()
     try:
-        for index, (case, attempt) in enumerate(scheduled):
+        for index, (case, attempt, current_arm) in enumerate(scheduled):
             if budget.snapshot()["remaining"] == 0:
                 report["status"] = "budget_exhausted"
                 break
-            report["in_progress"] = dict(case_id=case.id, attempt=attempt, observations=[])
+            report["in_progress"] = dict(
+                case_id=case.id, attempt=attempt, arm=current_arm, observations=[]
+            )
             save()
             model: CheckedModel | None = None
             try:
                 model = CheckedModel(factory(settings), options.max_input_tokens)
                 active_models.append(model)
-                result = runner.run_model_case(
-                    case, model, settings, attempt=attempt, on_turn=progress
-                )
+                if current_arm == "agent":
+                    result = runner.run_model_case(
+                        case, model, settings, attempt=attempt, on_turn=progress
+                    )
+                else:
+                    result = baseline_runner.run_case(
+                        case, model, settings, attempt=attempt, on_turn=progress
+                    )
                 metrics = dict(
                     result.metrics,
+                    arm=current_arm,
                     provider_attempts=model.provider_attempts,
                     input_rejections=model.input_rejections,
                     max_observed_input_estimate=model.max_observed_input_estimate,
@@ -253,6 +298,7 @@ def run(argv: list[str] | None = None, *, model_factory: ModelFactory | None = N
                     False,
                     (CheckResult("setup", False, True, dict(error_type=type(error).__name__)),),
                     dict(
+                        arm=current_arm,
                         provider_attempts=model.provider_attempts if model else 0,
                         observations=(report["in_progress"] or {}).get("observations", []),
                     ),
@@ -260,7 +306,9 @@ def run(argv: list[str] | None = None, *, model_factory: ModelFactory | None = N
                 )
             results.append(result.to_dict())
             report["in_progress"] = None
-            report["not_run"] = [dict(case_id=c.id, attempt=a) for c, a in scheduled[index + 1 :]]
+            report["not_run"] = [
+                dict(case_id=c.id, attempt=a, arm=arm) for c, a, arm in scheduled[index + 1 :]
+            ]
             save()
             if result.metrics.get("budget_rejections", 0) and budget.snapshot()["remaining"] == 0:
                 report["status"] = "budget_exhausted"
@@ -277,10 +325,15 @@ def run(argv: list[str] | None = None, *, model_factory: ModelFactory | None = N
         raise
     finally:
         report["not_run"] = [
-            dict(case_id=c.id, attempt=a)
-            for c, a in scheduled[len(results) :]
+            dict(case_id=c.id, attempt=a, arm=arm)
+            for c, a, arm in scheduled[len(results) :]
             if report["in_progress"] is None
-            or (c.id, a) != (report["in_progress"]["case_id"], report["in_progress"]["attempt"])
+            or (c.id, a, arm)
+            != (
+                report["in_progress"]["case_id"],
+                report["in_progress"]["attempt"],
+                report["in_progress"]["arm"],
+            )
         ]
         save()
     print(

@@ -236,6 +236,24 @@ class CareerEvalRunner:
                 evidence_mode="offline-script" if scripted else "model",
                 control="omit_state" if omit_state_control else "normal",
             )
+            if not scripted:
+                metrics["business_checks_applicable"] = True
+                metrics["tool_behavior"] = dict(
+                    requests=len(all_records),
+                    execution_started=sum(r.execution_started for r in all_records),
+                    status_counts={
+                        status: sum(r.status.value == status for r in all_records)
+                        for status in (
+                            "succeeded",
+                            "failed",
+                            "rejected",
+                            "skipped",
+                            "result_unknown",
+                        )
+                    },
+                    unapproved_writes=sum(len(o["unapproved_writes"]) for o in observations),
+                    meaning="执行状态统计，不等于语义上的工具选择准确率。",
+                )
             return EvalResult(
                 case.id,
                 all(c.passed for c in checks if c.hard_gate),
