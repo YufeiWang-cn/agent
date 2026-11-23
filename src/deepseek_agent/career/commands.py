@@ -63,6 +63,16 @@ class ExportReview:
 
 
 @dataclass(frozen=True)
+class ListExports:
+    review_id: str | None = None
+
+
+@dataclass(frozen=True)
+class CheckExport:
+    export_id: str
+
+
+@dataclass(frozen=True)
 class BuildResumeDraft:
     fact_ids: list[str]
 
@@ -77,6 +87,8 @@ CareerCommand = (
     | DecideReview
     | ExportReview
     | BuildResumeDraft
+    | ListExports
+    | CheckExport
 )
 
 
@@ -85,4 +97,4 @@ def requires_confirmation(command: CareerCommand) -> bool:
 
 
 def is_read_only(command: CareerCommand) -> bool:
-    return isinstance(command, (RecallMemory, GetReview))
+    return isinstance(command, (RecallMemory, GetReview, ListExports, CheckExport))

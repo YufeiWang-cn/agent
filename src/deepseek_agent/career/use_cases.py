@@ -1,5 +1,6 @@
 """求职业务用例：校验业务不变量，并在存储事务内完成状态修改。"""
 
+import hashlib
 import re
 from uuid import uuid4
 
@@ -17,7 +18,7 @@ from .domain import (
     text,
     validate_fact_source,
 )
-from .ports import CareerRepository, CareerTransaction
+from .ports import CareerRepository, CareerTransaction, ExportTarget
 from .rendering import render_resume_draft, render_review
 
 
@@ -296,13 +297,61 @@ class CareerUseCases:
             review["status"] = decision
             return review
 
+    @classmethod
+    def _render_snapshot(cls, db: CareerTransaction, review_id: str) -> tuple[Json, str]:
+        review = cls._read_review(db, review_id)
+        require_current_evidence(review, "报告")
+        evidence = []
+        for fact_id in review["fact_revisions"]:
+            fact = db.fact(fact_id)
+            assert fact is not None
+            evidence.append(fact)
+        return review, render_review(review, evidence)
+
     def render_review(self, review_id: str) -> str:
         with self.repository.transaction() as db:
-            review = self._read_review(db, review_id)
-            require_current_evidence(review, "报告")
-            evidence = []
-            for fact_id in review["fact_revisions"]:
-                fact = db.fact(fact_id)
-                assert fact is not None
-                evidence.append(fact)
-        return render_review(review, evidence)
+            return self._render_snapshot(db, review_id)[1]
+
+    def prepare_export(self, review_id: str, target: ExportTarget) -> tuple[Json, str]:
+        """在一个事务中验证证据、渲染快照、保存写入意图；提交后才允许写文件。"""
+        with self.repository.transaction() as db:
+            review, content = self._render_snapshot(db, review_id)
+            data = content.encode("utf-8")
+            record = dict(
+                id=uuid4().hex,
+                review_id=review_id,
+                path=target.path,
+                workspace_id=target.workspace_id,
+                content_sha256=hashlib.sha256(data).hexdigest(),
+                byte_count=len(data),
+                review_status=review["status"],
+                fact_revisions=review["fact_revisions"],
+                created_at=now_china().isoformat(),
+                finished_at=None,
+                error_type=None,
+                result="pending",
+            )
+            db.insert_export(record)
+        return record, content
+
+    def export_record(self, export_id: str) -> Json:
+        with self.repository.transaction() as db:
+            record = db.export_record(export_id)
+            if record is None:
+                raise CareerDataError("导出记录不存在于当前求职档案。")
+            return record
+
+    def list_exports(self, review_id: str | None = None) -> list[Json]:
+        with self.repository.transaction() as db:
+            if review_id is not None:
+                self._read_review(db, review_id)
+            return db.list_exports(review_id)
+
+    def finish_export(self, export_id: str, result: str, error_type: str | None = None) -> None:
+        if result not in {"succeeded", "unconfirmed"}:
+            raise CareerDataError("导出结果状态无效。")
+        with self.repository.transaction() as db:
+            record = db.export_record(export_id)
+            if record is None or record["result"] != "pending":
+                raise CareerDataError("导出记录不存在或已经结束，不能改写历史结果。")
+            db.finish_export(export_id, result, now_china().isoformat(), error_type)

@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING
 from ..tools import ToolRegistry
 from .commands import (
     BuildResumeDraft,
+    CheckExport,
+    ListExports,
     CareerCommand,
     DecideReview,
     ExportReview,
@@ -56,6 +58,10 @@ def command_from_arguments(name: str, arguments: Json) -> CareerCommand:
                 arguments.get("findings"),
                 arguments.get("general_advice"),
             )
+        if action == "exports":
+            return ListExports(arguments.get("review_id"))
+        if action == "check_export":
+            return CheckExport(arguments.get("export_id", ""))
         if action == "get":
             return GetReview(arguments.get("review_id", ""))
         if action == "decide":

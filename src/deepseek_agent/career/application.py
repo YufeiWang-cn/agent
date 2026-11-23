@@ -2,6 +2,8 @@
 
 from .commands import (
     BuildResumeDraft,
+    CheckExport,
+    ListExports,
     CareerCommand,
     DecideReview,
     ExportReview,
@@ -13,8 +15,9 @@ from .commands import (
     SaveReview,
     requires_confirmation,
 )
-from .domain import CareerDataError, Json, text
-from .ports import DocumentSource, ReportExporter
+from .domain import CareerDataError, ExportUnconfirmedError, Json, text
+from ..timekeeping import now_china
+from .ports import DocumentSource, ReportExporter, ExportTarget
 from .use_cases import CareerUseCases
 
 
@@ -73,16 +76,80 @@ class CareerApplication:
             path = text(command.path, "path", 500)
             if not path.lower().endswith(".md"):
                 raise CareerDataError("导出路径必须以 .md 结尾。")
-            content = self._use_cases.render_review(review_id)
-            artifact = self._exporter.write_new(path, content)
-            return dict(
-                path=artifact.path,
-                bytes=artifact.bytes,
-                status=self._use_cases.review(review_id)["status"],
+            return self._export_review(review_id, path)
+        if isinstance(command, ListExports):
+            filter_review_id = (
+                text(command.review_id, "review_id", 64) if command.review_id is not None else None
             )
+            return dict(exports=self._use_cases.list_exports(filter_review_id), limit=50)
+        if isinstance(command, CheckExport):
+            return self._check_export(text(command.export_id, "export_id", 64))
         if isinstance(command, BuildResumeDraft):
             return self._use_cases.build_resume_draft(command.fact_ids)
         raise CareerDataError("不支持的求职命令。")
+
+    def _export_review(self, review_id: str, path: str) -> Json:
+        target = self._exporter.prepare_target(path)
+        record, content = self._use_cases.prepare_export(review_id, target)
+        try:
+            artifact = self._exporter.write_new(target.path, content)
+            if artifact.path != target.path or artifact.bytes != record["byte_count"]:
+                raise CareerDataError("导出返回值与准备记录不一致。")
+        except Exception as error:
+            # 适配器可能在实际写出后抛错，不能据异常断言文件不存在。
+            try:
+                self._use_cases.finish_export(record["id"], "unconfirmed", type(error).__name__)
+            except Exception:
+                pass  # 意图已落盘；状态更新失败时保留 pending 供核对。
+            raise ExportUnconfirmedError(
+                f"导出未确认完成，记录 ID：{record['id']}。请先核对结果，不要直接重试。"
+            ) from error
+        try:
+            self._use_cases.finish_export(record["id"], "succeeded")
+        except Exception as error:
+            raise ExportUnconfirmedError(
+                f"文件已写出，但完成记录未保存，记录 ID：{record['id']}。请先核对结果。"
+            ) from error
+        return dict(
+            path=artifact.path,
+            bytes=artifact.bytes,
+            status=record["review_status"],
+            export_id=record["id"],
+            export_result="succeeded",
+        )
+
+    def _check_export(self, export_id: str) -> Json:
+        record = self._use_cases.export_record(export_id)
+        observation = self._exporter.inspect(ExportTarget(record["path"], record["workspace_id"]))
+        state = observation["state"]
+        if state == "present":
+            state = (
+                "match"
+                if (
+                    observation["sha256"] == record["content_sha256"]
+                    and observation["bytes"] == record["byte_count"]
+                )
+                else "modified"
+            )
+        review = self._use_cases.review(record["review_id"])
+        messages = {
+            "match": "当前文件与本次导出快照一致；这不改变历史执行记录或证明报告仍然有效。",
+            "missing": "当前未找到文件；本次核对不会重新导出。",
+            "modified": "当前文件内容与导出快照不一致；不会覆盖文件。",
+            "unreadable": "当前无法安全读取文件，不能确认结果。",
+            "workspace_mismatch": "当前工作区与导出时不同，未读取该相对路径。",
+        }
+        return dict(
+            record=record,
+            file_status=state,
+            checked_at=now_china().isoformat(),
+            observed_sha256=observation.get("sha256"),
+            observed_bytes=observation.get("bytes"),
+            current_review_status=review["status"],
+            review_stale=review["stale"],
+            stale_reasons=review["stale_reasons"],
+            message=messages[state],
+        )
 
     def _import(self, command: ImportDocument, user_message: str) -> Json:
         if (command.text is None) == (command.path is None):

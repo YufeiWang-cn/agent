@@ -1,4 +1,4 @@
-"""支持 v1→v2 事务迁移的 SQLite 适配器；每个业务事务共用一个连接。"""
+"""支持 v1/v2→v3 事务迁移的 SQLite 适配器；每个业务事务共用一个连接。"""
 
 import json
 import sqlite3
@@ -19,9 +19,13 @@ class SqliteCareerRepository:
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2):
+            if version not in (0, 1, 2, 3):
                 raise CareerDataError("求职数据库版本不受支持，请保留文件并升级程序。")
+            if version == 3:
+                return
             if version == 2:
+                self._backup(2)
+                self._migrate_v2(db)
                 return
             existing = (
                 db.execute(
@@ -50,10 +54,14 @@ class SqliteCareerRepository:
             ):
                 db.execute(statement)
             self._migrate_v1(db)
+            self._migrate_v2(db)
 
     def _backup_v1(self) -> None:
+        self._backup(1)
+
+    def _backup(self, version: int) -> None:
         """持有主连接写锁时通过独立只读连接备份，包含 WAL 中已提交数据。"""
-        backup = self.path.with_name(self.path.name + f".v1-{uuid4().hex}.bak")
+        backup = self.path.with_name(self.path.name + f".v{version}-{uuid4().hex}.bak")
         try:
             with closing(
                 sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True)
@@ -80,6 +88,18 @@ class SqliteCareerRepository:
             "ALTER TABLE reviews ADD COLUMN dependency_status TEXT NOT NULL DEFAULT 'needs_review'"
         )
         db.execute("PRAGMA user_version = 2")
+
+    @staticmethod
+    def _migrate_v2(db: sqlite3.Connection) -> None:
+        db.execute(
+            "CREATE TABLE exports (id TEXT PRIMARY KEY, review_id TEXT NOT NULL, "
+            "path TEXT NOT NULL, workspace_id TEXT NOT NULL, content_sha256 TEXT NOT NULL, "
+            "byte_count INTEGER NOT NULL, review_status TEXT NOT NULL, fact_revisions TEXT NOT NULL, "
+            "created_at TEXT NOT NULL, finished_at TEXT, error_type TEXT, "
+            "result TEXT NOT NULL CHECK(result IN ('pending','succeeded','unconfirmed')))"
+        )
+        db.execute("CREATE INDEX exports_review_created ON exports(review_id, created_at)")
+        db.execute("PRAGMA user_version = 3")
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
@@ -236,3 +256,37 @@ class SqliteCareerTransaction:
 
     def set_review_status(self, review_id: str, status: str) -> None:
         self._db.execute("UPDATE reviews SET status=? WHERE id=?", (status, review_id))
+
+    def insert_export(self, record: Json) -> None:
+        self._db.execute(
+            "INSERT INTO exports (id,review_id,path,workspace_id,content_sha256,byte_count,"
+            "review_status,fact_revisions,created_at,finished_at,error_type,result) VALUES "
+            "(:id,:review_id,:path,:workspace_id,:content_sha256,:byte_count,"
+            ":review_status,:fact_revisions,:created_at,:finished_at,:error_type,:result)",
+            dict(record, fact_revisions=json.dumps(record["fact_revisions"])),
+        )
+
+    @staticmethod
+    def _decode_export(row: Json | None) -> Json | None:
+        if row is not None:
+            row["fact_revisions"] = json.loads(row["fact_revisions"])
+        return row
+
+    def export_record(self, export_id: str) -> Json | None:
+        return self._decode_export(self._one("SELECT * FROM exports WHERE id=?", (export_id,)))
+
+    def list_exports(self, review_id: str | None) -> list[Json]:
+        where = " WHERE review_id=?" if review_id is not None else ""
+        rows = self._db.execute(
+            "SELECT * FROM exports" + where + " ORDER BY created_at DESC, id DESC LIMIT 50",
+            (review_id,) if review_id is not None else (),
+        )
+        return [dict(row, fact_revisions=json.loads(row["fact_revisions"])) for row in rows]
+
+    def finish_export(
+        self, export_id: str, result: str, finished_at: str, error_type: str | None
+    ) -> None:
+        self._db.execute(
+            "UPDATE exports SET result=?,finished_at=?,error_type=? WHERE id=?",
+            (result, finished_at, error_type, export_id),
+        )

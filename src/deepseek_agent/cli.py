@@ -5,7 +5,7 @@ from dataclasses import replace
 
 from .agent import Agent, AgentCancelledError
 from .config import PROJECT_ROOT, Settings
-from .career.commands import ForgetFact, RecallMemory
+from .career.commands import ForgetFact, RecallMemory, ListExports, CheckExport
 from .conversation import Message
 from .memory import ProjectStoreError, SessionStoreError
 from .models import ToolCallRequest
@@ -114,7 +114,7 @@ class CliApplication:
     def _handle_career_command(self, prompt: str) -> bool:
         command, _, argument = prompt.partition(" ")
         command = command.lower()
-        commands = {"/resume", "/jd", "/diagnose", "/match", "/interview", "/memory", "/forget"}
+        commands = {"/resume", "/jd", "/diagnose", "/match", "/interview", "/memory", "/forget", "/exports"}
         if command not in commands:
             return False
         if not self._agent.career_enabled:
@@ -143,7 +143,13 @@ class CliApplication:
                 if "\n".join(lines).strip():
                     self._chat(f"这是我的{kind}，请导入来源并分析：\n" + "\n".join(lines))
             return True
-        if command == "/memory":
+        if command == "/exports":
+            try:
+                operation = CheckExport(argument.strip()) if argument.strip() else ListExports()
+                print(json.dumps(self._agent.career_application.execute(operation), ensure_ascii=False, indent=2))
+            except ValueError as error:
+                print(f"导出核对未完成：{error}")
+        elif command == "/memory":
             print(json.dumps(self._agent.career_application.execute(RecallMemory(limit=200)), ensure_ascii=False, indent=2))
         elif command == "/forget":
             if not argument.strip():
@@ -322,6 +328,7 @@ class CliApplication:
             "求职模式：/resume [路径] 导入或粘贴简历；/jd [路径] 导入岗位描述\n"
             "  /diagnose 简历诊断；/match 岗位分析；/interview 模拟面试\n"
             "  /memory 查看长期记忆；/forget <事实 ID> 删除事实\n"
+            "  /exports 查看导出记录；/exports <导出 ID> 核对文件结果\n"
             "提示：<ID> 是占位符，请替换为 /sessions 显示的实际会话 ID。"
         )
 

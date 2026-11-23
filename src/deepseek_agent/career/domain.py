@@ -14,6 +14,10 @@ class CareerDataError(ValueError):
     """业务数据不符合约束，或保存的数据库不可用。"""
 
 
+class ExportUnconfirmedError(CareerDataError):
+    """文件可能已经写出；调用者必须保留副作用未知的执行记录。"""
+
+
 def text(value: Any, field: str, maximum: int = 1000) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > maximum:
         raise CareerDataError(f"{field} 必须是 1 到 {maximum} 字符的非空文本。")

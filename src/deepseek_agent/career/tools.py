@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from ..tools import JsonObject, Tool, ToolEffect, ToolExecutionError
 from ..workspace import WorkspaceAccessError
-from .domain import CareerDataError
+from .domain import CareerDataError, ExportUnconfirmedError
 from .commands import is_read_only, requires_confirmation
 from .tool_adapters import command_from_arguments
 
@@ -30,6 +30,8 @@ class CareerTool(Tool):
     def execute(self, arguments: JsonObject) -> str:
         try:
             return json.dumps(self.run(arguments), ensure_ascii=False)
+        except ExportUnconfirmedError as error:
+            raise ToolExecutionError(str(error), side_effect_possible=True) from error
         except (CareerDataError, WorkspaceAccessError) as error:
             raise ToolExecutionError(str(error)) from error
 
@@ -96,11 +98,12 @@ class CareerReviewTool(CareerTool):
     description = (
         "保存结构化分析和逐条修改草稿，读取报告，或经用户确认接受／拒绝。"
         "save 必须提供 findings（可为空）；个人经历判断与修改须引用确认事实。"
+        "exports 列出导出记录，check_export 核对文件；两者不写文件或重新导出。"
     )
     confirmation_description = "确认接受或拒绝这份报告。接受不会修改经历事实或覆盖原简历。"
     parameters = schema(
         {
-            "action": dict(type="string", enum=["save", "get", "decide"]),
+            "action": dict(type="string", enum=["save", "get", "decide", "exports", "check_export"]),
             "resume_id": string("原始简历来源 ID"),
             "job_id": string("可选 JD 来源 ID"),
             "title": string("报告名称"),
@@ -139,7 +142,8 @@ class CareerReviewTool(CareerTool):
                     ["original", "suggested", "reason", "evidence_fact_ids"],
                 ),
             ),
-            "review_id": string("报告 ID"),
+            "review_id": string("报告 ID；exports 时可按报告筛选"),
+            "export_id": string("check_export 使用的完整导出记录 ID"),
             "decision": dict(type="string", enum=["accepted", "rejected"]),
         },
         ["action"],

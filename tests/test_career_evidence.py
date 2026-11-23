@@ -238,7 +238,7 @@ class EvidenceMigrationTests(unittest.TestCase):
     def test_upgrade_preserves_data_but_does_not_certify_legacy_evidence(self):
         store = CareerStore(self.path)
         with store.connection() as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 3)
             self.assertEqual(
                 db.execute("SELECT data FROM fact_history").fetchone()[0], '{"statement":"旧事实"}'
             )
