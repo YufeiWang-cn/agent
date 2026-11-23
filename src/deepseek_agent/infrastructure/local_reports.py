@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+from uuid import uuid4
 
 from ..career.domain import CareerDataError, Json
 from ..career.ports import ExportArtifact, ExportTarget
@@ -18,9 +19,7 @@ class LocalReportExporter:
         return hashlib.sha256(os.path.normcase(str(self._guard.root)).encode("utf-8")).hexdigest()
 
     def prepare_target(self, path: str) -> ExportTarget:
-        resolved, created, _ = self._guard.prepare_text_write(path, "")
-        if not created:
-            raise CareerDataError("目标文件已存在，请选择新文件名；不会覆盖原文件。")
+        resolved, _, _ = self._guard.prepare_text_write(path, "")
         return ExportTarget(self._guard.relative_path(resolved), self.workspace_id)
 
     def inspect(self, target: ExportTarget) -> Json:
@@ -37,8 +36,28 @@ class LocalReportExporter:
             return dict(state="unreadable")
 
     def write_new(self, path: str, content: str) -> ExportArtifact:
-        _, created, _ = self._guard.prepare_text_write(path, content)
+        resolved, created, data = self._guard.prepare_text_write(path, content)
         if not created:
-            raise CareerDataError("目标文件已存在，请选择新文件名；不会覆盖原文件。")
-        resolved, _, count = self._guard.write_text(path, content)
-        return ExportArtifact(self._guard.relative_path(resolved), count)
+            raise CareerDataError("目标文件已存在，请先核对导出记录；不会覆盖原文件。")
+        temporary = resolved.with_name(f".{resolved.name}.{uuid4().hex}.tmp")
+        try:
+            with temporary.open("xb") as output:
+                output.write(data)
+                output.flush()
+                os.fsync(output.fileno())
+            # 再校验一次路径；最终用硬链接排他发布完整文件，目标已存在时由文件系统拒绝。
+            # 不允许退回 exists()+replace()，否则检查后新出现的文件仍可能被覆盖。
+            current, created, _ = self._guard.prepare_text_write(path, content)
+            if current != resolved or not created:
+                raise CareerDataError("导出目标在写入前发生变化，未覆盖文件，请先核对。")
+            os.link(temporary, resolved)
+        except OSError as error:
+            raise WorkspaceAccessError(
+                "无法安全创建报告文件；不会退回覆盖写入，请核对导出记录。"
+            ) from error
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return ExportArtifact(self._guard.relative_path(resolved), len(data))

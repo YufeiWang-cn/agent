@@ -1,6 +1,7 @@
 """支持 v1/v2→v3 事务迁移的 SQLite 适配器；每个业务事务共用一个连接。"""
 
 import json
+import os
 import sqlite3
 from contextlib import closing, contextmanager
 from pathlib import Path
@@ -8,7 +9,7 @@ from typing import Iterator
 from uuid import uuid4
 
 from ..career.domain import CareerDataError, Json
-from ..career.ports import CareerTransaction, Collection
+from ..career.ports import CareerTransaction, Collection, ExportTarget
 
 
 class SqliteCareerRepository:
@@ -282,6 +283,19 @@ class SqliteCareerTransaction:
             (review_id,) if review_id is not None else (),
         )
         return [dict(row, fact_revisions=json.loads(row["fact_revisions"])) for row in rows]
+
+    def latest_export(self, target: ExportTarget) -> Json | None:
+        # 定向查整个历史，不受展示列表最近 50 条的限制；按插入顺序选择最近意图。
+        # Windows 普通路径大小写别名不能绕过已有记录；其他平台保持大小写敏感。
+        collation = "NOCASE" if os.name == "nt" else "BINARY"
+        return self._decode_export(
+            self._one(
+                "SELECT * FROM exports WHERE workspace_id=? AND path=? COLLATE "
+                + collation
+                + " ORDER BY rowid DESC LIMIT 1",
+                (target.workspace_id, target.path),
+            )
+        )
 
     def finish_export(
         self, export_id: str, result: str, finished_at: str, error_type: str | None

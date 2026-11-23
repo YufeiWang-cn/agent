@@ -153,11 +153,12 @@ class CareerReviewTool(CareerTool):
 class ExportCareerReviewTool(CareerTool):
     name = "export_career_review"
     description = (
-        "经用户确认将报告导出为新 Markdown 文件，包含状态、逐条修改及事实依据；不覆盖已有文件。"
+        "经用户确认导出 Markdown 报告；同档案、同工作区、同报告和路径的快照及现存文件一致时复用原结果。"
+        "文件冲突、修改或缺失时停止，不覆盖或自动补写；重试仍需确认。"
     )
     requires_confirmation = True
     parameters = schema(
-        {"review_id": string("报告 ID"), "path": string("新的工作区相对 .md 路径；父目录须已存在")},
+        {"review_id": string("报告 ID"), "path": string("工作区相对 .md 路径；父目录须存在；同路径重试只允许核对后复用，不覆盖")},
         ["review_id", "path"],
     )
 

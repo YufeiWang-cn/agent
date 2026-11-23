@@ -90,6 +90,16 @@ class CareerApplication:
 
     def _export_review(self, review_id: str, path: str) -> Json:
         target = self._exporter.prepare_target(path)
+        previous = self._use_cases.find_export_for_retry(review_id, target)
+        observation = self._exporter.inspect(target)
+        if previous is not None:
+            return self._reuse_export(previous, observation)
+        if observation["state"] != "missing":
+            if observation["state"] == "present":
+                raise CareerDataError(
+                    "目标文件已存在，但当前档案没有匹配的导出记录；不会覆盖，请选择新文件名。"
+                )
+            raise CareerDataError("无法安全核对导出目标，未写入文件。")
         record, content = self._use_cases.prepare_export(review_id, target)
         try:
             artifact = self._exporter.write_new(target.path, content)
@@ -116,6 +126,32 @@ class CareerApplication:
             status=record["review_status"],
             export_id=record["id"],
             export_result="succeeded",
+            reused=False,
+        )
+
+    @staticmethod
+    def _reuse_export(record: Json, observation: Json) -> Json:
+        if observation["state"] == "missing":
+            raise CareerDataError(
+                "导出记录存在，但文件已缺失；不会自动补写，请确认后使用新文件名。"
+            )
+        if observation["state"] != "present":
+            raise CareerDataError("无法安全核对已有导出文件，不能复用或覆盖。")
+        if (
+            observation["sha256"] != record["content_sha256"]
+            or observation["bytes"] != record["byte_count"]
+        ):
+            raise CareerDataError("导出文件已被修改，不能复用或覆盖；请保留该文件并选择新文件名。")
+        return dict(
+            path=record["path"],
+            bytes=record["byte_count"],
+            status=record["review_status"],
+            export_id=record["id"],
+            export_result=record["result"],
+            reused=True,
+            file_status="match",
+            checked_at=now_china().isoformat(),
+            message="核对时文件与当前报告及原导出快照一致，已复用原结果；未重新写入，历史执行状态保持不变。",
         )
 
     def _check_export(self, export_id: str) -> Json:

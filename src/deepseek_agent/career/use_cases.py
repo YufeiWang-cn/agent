@@ -312,6 +312,27 @@ class CareerUseCases:
         with self.repository.transaction() as db:
             return self._render_snapshot(db, review_id)[1]
 
+    def find_export_for_retry(self, review_id: str, target: ExportTarget) -> Json | None:
+        """重试仍验证当前证据；已有路径不能静默切换报告或快照。此查询不写入。"""
+        with self.repository.transaction() as db:
+            review, content = self._render_snapshot(db, review_id)
+            previous = db.latest_export(target)
+            if previous is None:
+                return None
+            if previous["review_id"] != review_id:
+                raise CareerDataError("目标路径已有另一份报告的导出记录，请选择新文件名。")
+            data = content.encode("utf-8")
+            if (
+                previous["content_sha256"] != hashlib.sha256(data).hexdigest()
+                or previous["byte_count"] != len(data)
+                or previous["review_status"] != review["status"]
+                or previous["fact_revisions"] != review["fact_revisions"]
+            ):
+                raise CareerDataError(
+                    "报告内容、审阅状态或事实版本已变化，请确认后导出到新文件名。"
+                )
+            return previous
+
     def prepare_export(self, review_id: str, target: ExportTarget) -> tuple[Json, str]:
         """在一个事务中验证证据、渲染快照、保存写入意图；提交后才允许写文件。"""
         with self.repository.transaction() as db:
