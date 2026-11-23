@@ -1,13 +1,15 @@
-"""真实 Agent/SQLite/工具链的离线多轮评测；不创建真实模型或网络连接。"""
+"""求职多轮评测共用 Agent/SQLite/确认器；模型由入口选择，联网工具始终使用假服务。"""
 
 import json
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import replace
 from pathlib import Path
 from time import monotonic
 from typing import Any
 
 from ..agent import Agent
+from ..models import ChatModel
 from ..reliability import ModelBudget
 from ..config import Settings
 from ..memory import JsonSessionStore, JsonProjectStore
@@ -28,7 +30,8 @@ from .runner import EvalRunner
 
 
 class OfflineTransport:
-    def __init__(self) -> None:
+    def __init__(self, *, search_snapshot: bool = False) -> None:
+        self.search_snapshot = search_snapshot
         self.requests: list[dict[str, Any]] = []
 
     def __call__(self, body: bytes, headers: Mapping[str, str], timeout_seconds: float) -> bytes:
@@ -38,6 +41,15 @@ class OfflineTransport:
             dict(url=url, raw_content="公开岗位：Python 后端实习")
             for url in payload.get("urls", [])
         ]
+        if self.search_snapshot and "query" in payload:
+            results = [
+                dict(
+                    title="北京 Python 后端实习（合成快照）",
+                    url="https://example.org/jobs/python-intern",
+                    content="北京 Python 后端实习：Python 接口开发、接口测试。此材料为固定合成岗位。",
+                    score=0.99,
+                )
+            ]
         return json.dumps(dict(results=results)).encode("utf-8")
 
 
@@ -48,15 +60,42 @@ class CareerEvalRunner:
     def run_case(
         self, case: CareerCase, *, attempt: int = 1, omit_state_control: bool = False
     ) -> EvalResult:
+        return self._run_case(
+            case, CareerScriptModel(), attempt=attempt, omit_state_control=omit_state_control
+        )
+
+    def run_model_case(
+        self,
+        case: CareerCase,
+        model: ChatModel,
+        settings: Settings,
+        *,
+        attempt: int = 1,
+        on_turn: Callable[[dict[str, Any]], None] | None = None,
+    ) -> EvalResult:
+        return self._run_case(
+            case, model, attempt=attempt, settings=settings, scripted=False, on_turn=on_turn
+        )
+
+    def _run_case(
+        self,
+        case: CareerCase,
+        model: ChatModel,
+        *,
+        attempt: int,
+        omit_state_control: bool = False,
+        settings: Settings | None = None,
+        scripted: bool = True,
+        on_turn: Callable[[dict[str, Any]], None] | None = None,
+    ) -> EvalResult:
         started = monotonic()
         with tempfile.TemporaryDirectory(prefix="career-eval-") as directory:
             root = Path(directory)
             workspace = root / "workspace"
             workspace.mkdir()
             state = root / "state"
-            model = CareerScriptModel()
             confirmer = OperationConfirmer()
-            transport = OfflineTransport()
+            transport = OfflineTransport(search_snapshot=not scripted)
             tools = ToolRegistry(
                 [
                     WebSearchTool(
@@ -68,11 +107,14 @@ class CareerEvalRunner:
                 ]
             )
             agent = Agent(
-                Settings(
-                    api_key="offline",
-                    base_url="https://example.invalid",
-                    model=model.model_name,
-                    system_prompt="本次为合成材料求职评测。",
+                replace(
+                    settings
+                    or Settings(
+                        api_key="offline",
+                        base_url="https://example.invalid",
+                        model=model.model_name,
+                        system_prompt="本次为合成材料求职评测。",
+                    ),
                     workspace_root=workspace,
                     agent_mode="career",
                     max_retries=0,
@@ -90,7 +132,9 @@ class CareerEvalRunner:
             outcome: TurnOutcome | None = None
             total_steps = 0
             for index, turn in enumerate(case.turns, 1):
-                model.begin(turn["script"], turn["answer"], turn.get("fail_model", False))
+                if scripted:
+                    assert isinstance(model, CareerScriptModel)
+                    model.begin(turn["script"], turn["answer"], turn.get("fail_model", False))
                 confirmer.policy = turn["approvals"]
                 confirmer.decisions = []
                 records: list[ToolExecutionRecord] = []
@@ -137,7 +181,7 @@ class CareerEvalRunner:
                         and record.confirmation_granted is not True
                     ):
                         unapproved.append(record.call_id)
-                observed = dict(
+                observed: dict[str, Any] = dict(
                     status=outcome.status.value if outcome else "failed",
                     answer=outcome.final_text or "" if outcome else "",
                     error=error,
@@ -147,21 +191,49 @@ class CareerEvalRunner:
                     unapproved_writes=unapproved,
                     decisions=list(confirmer.decisions),
                 )
-                checks.extend(grade_turn(turn["expected"], observed, workspace, f"turn_{index}"))
+                checks.extend(
+                    grade_turn(
+                        turn["expected"], observed, workspace, f"turn_{index}", check_trace=scripted
+                    )
+                )
+                if not scripted:
+                    checks.append(
+                        CheckResult(
+                            f"turn_{index}.response_present", bool(observed["answer"].strip()), True
+                        )
+                    )
+                    observed["artifacts"] = {
+                        name: (workspace / name).read_text(encoding="utf-8")
+                        for name in turn["expected"]["files"]
+                        if (workspace / name).is_file()
+                    }
+                    observed["model_budget"] = agent.model_budget_snapshot
                 observations.append(observed)
                 all_records.extend(records)
                 total_steps += outcome.steps_completed if outcome else 0
+                if on_turn is not None:
+                    on_turn(
+                        dict(
+                            case_id=case.id,
+                            attempt=attempt,
+                            observations=observations,
+                            checks=[c.to_dict() for c in checks],
+                        )
+                    )
+                if not scripted and observed["status"] in {"budget_exhausted", "cancelled"}:
+                    break
             metrics: dict[str, Any] = EvalRunner._metrics(
                 agent, outcome, tuple(all_records), monotonic() - started
             )
             metrics.update(
                 steps_completed=total_steps,
-                turns=len(case.turns),
-                real_api_calls=0,
+                turns=len(observations),
+                planned_turns=len(case.turns),
+                real_api_calls=0 if scripted else None,
                 model_budget=agent.model_budget_snapshot,
                 network_requests=len(transport.requests),
                 observations=observations,
-                evidence_mode="offline-script",
+                evidence_mode="offline-script" if scripted else "model",
                 control="omit_state" if omit_state_control else "normal",
             )
             return EvalResult(

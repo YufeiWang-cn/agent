@@ -347,3 +347,10 @@ GitHub Actions 会读取 `.python-version` 中的推荐版本，并自动执行�
 新增面向计算机专业学生的 Agent／后端实习与校招流程：导入 PDF／DOCX／文本简历、经历访谈、岗位分析、逐条修改审阅、项目面试与 Markdown 报告导出。用户确认的经历事实可以跨会话复用，纠正后会使依赖旧事实的报告失效。
 
 在现有环境执行 `python -m pip install -e .` 后，用 `python career_gui.py` 启动桌面求职模式，或 `python career.py` 启动 CLI。原通用入口继续保留。详细用法及首版边界见 [求职模式指南](docs/career.md)。
+
+
+### 求职模型评测入口
+
+新增独立入口 `python -m deepseek_agent.evaluation.career_model_cli`，默认只预览 4 个合成案例、10 个用户轮次及预算，不读取密钥、不创建模型或写报告。显式 `--execute` 才会开始执行；本轮仅完成假模型验证，未运行真实付费评测。
+
+入口复用现有业务链路、确认器和评分结果，按轮次保存报告，整批共享调用额度，联网工具使用固定合成快照。它不要求模型复制离线脚本的工具顺序，也不将业务通过率当作语义质量或 A/B 收益。参数、预算和报告边界见 [求职评测说明](evals/career/README.md)。

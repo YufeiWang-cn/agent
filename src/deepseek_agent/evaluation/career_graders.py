@@ -9,7 +9,12 @@ from .snapshot import snapshot_workspace
 
 
 def grade_turn(
-    expected: dict[str, Any], observed: dict[str, Any], workspace: Path, prefix: str
+    expected: dict[str, Any],
+    observed: dict[str, Any],
+    workspace: Path,
+    prefix: str,
+    *,
+    check_trace: bool = True,
 ) -> tuple[CheckResult, ...]:
     checks = []
 
@@ -21,11 +26,12 @@ def grade_turn(
         observed["status"] == expected["status"],
         dict(actual=observed["status"], expected=expected["status"], error=observed["error"]),
     )
-    add(
-        "tool_trace",
-        observed["trace"] == expected["trace"],
-        dict(actual=observed["trace"], expected=expected["trace"]),
-    )
+    if check_trace:
+        add(
+            "tool_trace",
+            observed["trace"] == expected["trace"],
+            dict(actual=observed["trace"], expected=expected["trace"]),
+        )
     failures = []
     for assertion in expected["state"]:
         rows = [

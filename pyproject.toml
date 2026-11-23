@@ -27,6 +27,7 @@ deepseek-agent-gui = "deepseek_agent.gui_app:main"
 career-agent = "deepseek_agent.cli:career_main"
 career-agent-gui = "deepseek_agent.gui_app:career_main"
 deepseek-agent-eval = "deepseek_agent.evaluation.cli:main"
+career-model-eval = "deepseek_agent.evaluation.career_model_cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
